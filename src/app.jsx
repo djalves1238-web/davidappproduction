@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import react, { useState, useEffect, useRef } from "react";
 import { User, Lock, Eye, EyeOff, Check, X, Clock, LogOut, ChevronDown, Home as HomeIcon, Soup, Wheat, Layers, Package, FileText, Loader2, ShieldCheck, ArrowLeft, CalendarDays, Plus, Trash2, Save, Sun, Moon, History, TrendingUp, AlertTriangle, Archive, PackageCheck, RotateCcw, Boxes, Printer, Download, Share2, Bell, Menu, Pencil } from "lucide-react";
 
 // ---------- Design tokens ----------
