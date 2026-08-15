@@ -236,7 +236,7 @@ export default function App() {
   const [booting, setBooting] = useState(true);
   const [users, setUsers] = useState([]);
   const [requests, setRequests] = useState([]);
-  const [produtos, setProdutos] = useState([]);
+  const [produtos  , setProdutos] = useState([]);
   const [planos, setPlanos] = useState([]);
   const [lote, setLote] = useState(null);
   const [lotesAbertos, setLotesAbertos] = useState([]);
