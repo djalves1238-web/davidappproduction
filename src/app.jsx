@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { supabase } from './supabaseclient';
 import { User, Lock, Eye, EyeOff, Check, X, Clock, LogOut, ChevronDown, Home as HomeIcon, Soup, Wheat, Layers, Package, FileText, Loader2, ShieldCheck, ArrowLeft, CalendarDays, Plus, Trash2, Save, Sun, Moon, History, TrendingUp, AlertTriangle, Archive, PackageCheck, RotateCcw, Boxes, Printer, Download, Share2, Bell, Menu, Pencil } from "lucide-react";
 
 // ---------- Design tokens ----------
@@ -236,7 +237,37 @@ export default function App() {
   const [booting, setBooting] = useState(true);
   const [users, setUsers] = useState([]);
   const [requests, setRequests] = useState([]);
-  const [produtos  , setProdutos] = useState([]);
+const [produtos  , setProdutos] = useState([]);
+
+useEffect(() => {
+  async function carregarProdutos() {
+    const { data, error } = await supabase
+      .from('produtos')
+      .select('*')
+      .order('nome');
+
+    if (error) {
+      console.error('Erro ao carregar produtos:', error);
+      return;
+    }
+
+    const produtosFormatados = data.map(p => ({
+      id: p.id,
+      nome: p.nome,
+      pesoMassa: p.peso_massa,
+      pesoRecheio: p.peso_recheio,
+      pesoCatupiry: p.peso_catupiry,
+      temCatupiry: p.tem_catupiry,
+      empana: p.empana,
+      validadeDias: p.validade_dias,
+      status: p.status,
+    }));
+
+    setProdutos(produtosFormatados);
+  }
+
+  carregarProdutos();
+}, []);
   const [planos, setPlanos] = useState([]);
   const [lote, setLote] = useState(null);
   const [lotesAbertos, setLotesAbertos] = useState([]);
@@ -389,7 +420,7 @@ export default function App() {
       if (!cancelled) {
         setUsers(await seedUsers());
         setRequests([]);
-        setProdutos(seedProdutos());
+        //setProdutos(seedProdutos());
         setPlanos([]);
         setLote(loteVazio(new Date()));
         setSobras([]);
@@ -455,7 +486,7 @@ export default function App() {
       showToast("Você não pode bloquear a si mesmo.", "warn");
       return;
     }
-    const ativosAdmin = users.filter((u) => u.perfil === "Administrador" && u.status === "ativo");
+    const ativosAdmin = users.filter((u) => u.perfil === "administrador" && u.status === "ativo");
     if (alvo.perfil === "Administrador" && alvo.status === "ativo" && ativosAdmin.length <= 1) {
       showToast("Não é possível bloquear o único Administrador ativo.", "warn");
       return;
@@ -651,82 +682,217 @@ export default function App() {
     showToast("Sobra descartada e registrada como perda.", "warn");
   }
 
-  async function addRecheio(entrada) {
-    const nova = {
-      id: "r" + Date.now(),
-      ...entrada,
-      turno: turnoAtivo,
-      usuario: currentUser.nome,
-      horario: new Date().toISOString(),
-    };
-    await persistLote({ ...lote, recheios: [...lote.recheios, nova] });
-    showToast("Recheio registrado com sucesso.");
+  async function garantirLotePorData(dataISO) {
+  const ano = parseInt(dataISO.split('-')[0]);
+
+  const { data: existente, error: erroConsulta } = await supabase
+    .from('lotes')
+    .select('*')
+    .eq('data', dataISO)
+    .maybeSingle();
+
+  if (erroConsulta) {
+    console.error('Erro ao consultar lote:', erroConsulta);
+    return null;
   }
+
+  if (existente) {
+    return existente.id;
+  }
+
+  const { count, error: erroContagem } = await supabase
+    .from('lotes')
+    .select('*', { count: 'exact', head: true })
+    .eq('ano', ano);
+
+  if (erroContagem) {
+    console.error('Erro ao contar lotes do ano:', erroContagem);
+    return null;
+  }
+
+  const proximoNumero = (count ?? 0) + 1;
+
+  const { data: novoLote, error: erroInsercao } = await supabase
+    .from('lotes')
+    .insert({
+      numero: proximoNumero,
+      ano: ano,
+      data: dataISO,
+      status: 'aberto',
+    })
+    .select()
+    .single();
+
+  if (erroInsercao) {
+    console.error('Erro ao criar lote:', erroInsercao);
+    return null;
+  }
+
+  return novoLote.id;
+}
+
+async function garantirLoteDoDia() {
+  const dataISO = new Date().toISOString().split('T')[0];
+  return garantirLotePorData(dataISO);
+}
+  async function addRecheio(entrada) {
+  const loteId = await garantirLoteDoDia();
+
+  if (!loteId) {
+    showToast("Erro ao identificar o lote do dia. Tente novamente.");
+    return;
+  }
+
+  const { data: registroSalvo, error } = await supabase
+    .from('registros_producao')
+    .insert({
+      lote_id: loteId,
+      produto_id: entrada.produtoId,
+      etapa: 'recheio',
+         responsavel_id: currentUser.id,
+      turno: turnoAtivo,
+      peso: entrada.peso,
+      perda: entrada.perda,
+      observacoes: `${entrada.observacoes || ''} [usuário: ${currentUser.nome}]`.trim(),
+    })
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Erro ao salvar recheio no Supabase:', error);
+    showToast("Erro ao registrar recheio. Veja o console.");
+    return;
+  }
+
+  const nova = {
+    id: registroSalvo.id,
+    ...entrada,
+    turno: turnoAtivo,
+    usuario: currentUser.nome,
+    horario: registroSalvo.created_at,
+  };
+  await persistLote({ ...lote, recheios: [...lote.recheios, nova] });
+  showToast("Recheio registrado com sucesso.");
+}
 
   async function addMassa(entrada) {
-    const nova = {
-      id: "m" + Date.now(),
-      ...entrada,
-      turno: turnoAtivo,
-      usuario: currentUser.nome,
-      horario: new Date().toISOString(),
-    };
-    await persistLote({ ...lote, massas: [...lote.massas, nova] });
-    showToast("Massa registrada com sucesso.");
+  const loteId = await garantirLoteDoDia();
+
+  if (!loteId) {
+    showToast("Erro ao identificar o lote do dia. Tente novamente.");
+    return;
   }
 
-  async function addModelagem(entrada) {
-    const nova = {
-      id: "md" + Date.now(),
-      ...entrada,
+  const { data: registroSalvo, error } = await supabase
+    .from('registros_producao')
+    .insert({
+      lote_id: loteId,
+      produto_id: entrada.produtoId,
+      etapa: 'massa',
+         responsavel_id: currentUser.id,
       turno: turnoAtivo,
-      usuario: currentUser.nome,
-      horario: new Date().toISOString(),
-    };
-    let carrinhosAtualizados = lote.carrinhos || [];
-    if (parseInt(entrada.carrinhos) > 0) {
+      peso: entrada.peso,
+      perda: entrada.perda,
+      observacoes: `${entrada.observacoes || ''} [usuário: ${currentUser.nome}]`.trim(),
+    })
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Erro ao salvar massa no Supabase:', error);
+    showToast("Erro ao registrar massa. Veja o console.");
+    return;
+  }
+
+  const nova = {
+    id: registroSalvo.id,
+    ...entrada,
+    turno: turnoAtivo,
+    usuario: currentUser.nome,
+    horario: registroSalvo.created_at,
+  };
+  await persistLote({ ...lote, massas: [...lote.massas, nova] });
+  showToast("Massa registrada com sucesso.");
+}
+
+  async function addModelagem(entrada) {
+  const loteId = await garantirLoteDoDia();
+
+  if (!loteId) {
+    showToast("Erro ao identificar o lote do dia. Tente novamente.");
+    return;
+  }
+
+  const { data: registroSalvo, error } = await supabase
+    .from('registros_producao')
+    .insert({
+      lote_id: loteId,
+      produto_id: entrada.produtoId,
+      etapa: 'modelagem',
+         responsavel_id: currentUser.id,
+      turno: turnoAtivo,
+      peso: entrada.peso,
+      perda: entrada.perda,
+      observacoes: `${entrada.observacoes || ''} [usuário: ${currentUser.nome}]`.trim(),
+    })
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Erro ao salvar modelagem no Supabase:', error);
+    showToast("Erro ao registrar modelagem. Veja o console.");
+    return;
+  }
+
+  const nova = {
+    id: registroSalvo.id,
+    ...entrada,
+    turno: turnoAtivo,
+    usuario: currentUser.nome,
+    horario: registroSalvo.created_at,
+  };
+
+  let carrinhosAtualizados = lote.carrinhos || [];
+
+  if (parseInt(entrada.carrinhos) > 0) {
+    const { data: carrinhoSalvo, error: erroCarrinho } = await supabase
+      .from('registros_producao')
+      .insert({
+        lote_id: loteId,
+        produto_id: entrada.produtoId,
+        etapa: 'carrinho',
+        turno: turnoAtivo,
+        carrinhos_qtd: parseInt(entrada.carrinhos),
+        observacoes: `${entrada.observacoes || ''} [usuário: ${currentUser.nome}]`.trim(),
+      })
+      .select()
+      .single();
+
+    if (erroCarrinho) {
+      console.error('Erro ao salvar carrinho no Supabase:', erroCarrinho);
+      showToast("Modelagem salva, mas houve erro ao registrar o carrinho.");
+    } else {
       carrinhosAtualizados = [
         ...carrinhosAtualizados,
         {
-          id: "cr" + Date.now(),
+          id: carrinhoSalvo.id,
           produtoId: entrada.produtoId,
           quantidade: parseInt(entrada.carrinhos),
           observacoes: entrada.observacoes || "",
           usuario: currentUser.nome,
           turno: turnoAtivo,
-          horario: new Date().toISOString(),
+          horario: carrinhoSalvo.created_at,
           status: "pendente",
         },
       ];
     }
-    await persistLote({ ...lote, modelagens: [...lote.modelagens, nova], carrinhos: carrinhosAtualizados });
-    showToast("Modelagem registrada com sucesso.");
   }
 
-  async function addEmbalagem(entrada, loteAlvo) {
-    const nova = {
-      id: "e" + Date.now(),
-      ...entrada,
-      turno: turnoAtivo,
-      usuario: currentUser.nome,
-      horario: new Date().toISOString(),
-    };
-    if (loteAlvo && loteAlvo.numero !== lote.numero) {
-      const atualizado = { ...loteAlvo, embalagens: [...loteAlvo.embalagens, nova] };
-      try {
-        await window.storage.set(loteKeyFor(new Date(atualizado.data + "T00:00:00")), JSON.stringify(atualizado), true);
-      } catch {
-        showToast("Não foi possível sincronizar. Tente novamente.", "warn");
-      }
-      setLotesAbertos((prev) => prev.map((l) => (l.numero === atualizado.numero && l.ano === atualizado.ano ? atualizado : l)));
-      showToast(`Embalagem registrada no Lote ${atualizado.numero}.`);
-      return atualizado;
-    }
-    const atualizado = { ...lote, embalagens: [...lote.embalagens, nova] };
-    await persistLote(atualizado);
-    showToast("Embalagem registrada com sucesso.");
-    return atualizado;
-  }
+  await persistLote({ ...lote, modelagens: [...lote.modelagens, nova], carrinhos: carrinhosAtualizados });
+  showToast("Modelagem registrada com sucesso.");
+}
+
+
 
   async function carregarLotesAbertos() {
     try {
@@ -804,7 +970,7 @@ export default function App() {
   // ---------- Edição de registros já lançados (correções via Histórico/Relatórios) ----------
 
   async function editarLancamento({ secao, loteAno, loteNumero, loteData, registroId, registroUsuario, produtoNome, etapaLabel }, alteracoes) {
-    const souAdmin = currentUser.perfil === "Administrador";
+    const souAdmin = currentUser.perfil === "administrador";
     if (!souAdmin && registroUsuario !== currentUser.nome) {
       showToast("Você só pode editar os seus próprios lançamentos.", "warn");
       return false;
@@ -982,19 +1148,48 @@ export default function App() {
     return true;
   }
 
-  async function handleLogin(usuario, senha) {
-    const u = usuario.trim().toLowerCase();
-    const s = senha.trim();
-    const found = users.find((x) => x.usuario.toLowerCase() === u);
-    if (!found) return { ok: false, msg: "Usuário ou senha incorretos." };
-    const hash = await hashSenha(s, found.salt);
-    if (hash !== found.senhaHash) return { ok: false, msg: "Usuário ou senha incorretos." };
-    if (found.status !== "ativo") return { ok: false, msg: "Cadastro ainda não aprovado ou está inativo." };
-    setCurrentUser(found);
-    setView("app");
-    registrarLog("login", found.nome, `usuário: ${found.usuario}`);
-    return { ok: true };
+  async function handleLogin(email, senha) {
+  const e = email.trim().toLowerCase();
+  const s = senha.trim();
+
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email: e,
+    password: s,
+  });
+
+  if (error) {
+    console.error('Erro no login:', error);
+    return { ok: false, msg: "E-mail ou senha incorretos." };
   }
+
+  const { data: perfil, error: erroPerfil } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('id', data.user.id)
+    .single();
+
+  if (erroPerfil || !perfil) {
+    console.error('Erro ao buscar perfil:', erroPerfil);
+    return { ok: false, msg: "Não foi possível carregar seu perfil." };
+  }
+
+  if (perfil.status !== "ativo") {
+    return { ok: false, msg: "Cadastro ainda não aprovado ou está inativo." };
+  }
+
+  const found = {
+    id: perfil.id,
+    nome: perfil.nome,
+    usuario: perfil.usuario,
+    perfil: perfil.perfil,
+    status: perfil.status,
+  };
+
+  setCurrentUser(found);
+  setView("app");
+  registrarLog("login", found.nome, `usuário: ${found.usuario}`);
+  return { ok: true };
+}
 
   async function handleSignup({ nome, usuario, senha }) {
     if (users.some((x) => x.usuario === usuario) || requests.some((x) => x.usuario === usuario)) {
@@ -1373,7 +1568,7 @@ function SignupScreen({ onSignup, onBack }) {
         </div>
         <div className="rounded-2xl p-6 space-y-4" style={{ background: C.white, boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.06)" }}>
           <Field icon={<User size={16} />} placeholder="Nome completo" value={nome} onChange={setNome} />
-          <Field icon={<User size={16} />} placeholder="Usuário" value={usuario} onChange={setUsuario} />
+     <Field icon={<User size={16} />} placeholder="E-mail" value={usuario} onChange={setUsuario} />
           <Field icon={<Lock size={16} />} placeholder="Senha" type="password" value={senha} onChange={setSenha} />
           <Field icon={<Lock size={16} />} placeholder="Confirmar senha" type="password" value={confirmar} onChange={setConfirmar} />
           {error && <div className="text-sm rounded-lg px-3 py-2" style={{ background: C.redSoft, color: C.redDark }}>{error}</div>}
