@@ -891,7 +891,64 @@ async function garantirLoteDoDia() {
   await persistLote({ ...lote, modelagens: [...lote.modelagens, nova], carrinhos: carrinhosAtualizados });
   showToast("Modelagem registrada com sucesso.");
 }
+  async function addEmbalagem(entrada, loteAlvo) {
+  const dataAlvo = loteAlvo ? loteAlvo.data : lote.data;
+  const loteId = await garantirLotePorData(dataAlvo);
 
+  if (!loteId) {
+    showToast("Erro ao identificar o lote do dia. Tente novamente.");
+    return;
+  }
+
+  const { data: registroSalvo, error } = await supabase
+    .from('registros_producao')
+    .insert({
+      lote_id: loteId,
+      produto_id: entrada.produtoId,
+      etapa: 'embalagem',
+      responsavel_id: currentUser.id,
+      turno: turnoAtivo,
+      perda: entrada.perda,
+      quantidade_embalada: entrada.quantidadeEmbalada,
+      unidades_por_pacote: entrada.unidadesPorPacote,
+      pacotes_gerados: entrada.pacotesGerados,
+      data_validade: entrada.dataValidade,
+      observacoes: `${entrada.observacoes || ''} [usuário: ${currentUser.nome}]`.trim(),
+    })
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Erro ao salvar embalagem no Supabase:', error);
+    showToast("Erro ao registrar embalagem. Veja o console.");
+    return;
+  }
+
+  const nova = {
+    id: registroSalvo.id,
+    ...entrada,
+    turno: turnoAtivo,
+    usuario: currentUser.nome,
+    horario: registroSalvo.created_at,
+  };
+
+  if (loteAlvo && loteAlvo.numero !== lote.numero) {
+    const atualizado = { ...loteAlvo, embalagens: [...loteAlvo.embalagens, nova] };
+    try {
+      await window.storage.set(loteKeyFor(new Date(atualizado.data + "T00:00:00")), JSON.stringify(atualizado), true);
+    } catch {
+      showToast("Não foi possível sincronizar. Tente novamente.", "warn");
+    }
+    setLotesAbertos((prev) => prev.map((l) => (l.numero === atualizado.numero && l.ano === atualizado.ano ? atualizado : l)));
+    showToast(`Embalagem registrada no Lote ${atualizado.numero}.`);
+    return atualizado;
+  }
+
+  const atualizado = { ...lote, embalagens: [...lote.embalagens, nova] };
+  await persistLote(atualizado);
+  showToast("Embalagem registrada com sucesso.");
+  return atualizado;
+}
 
 
   async function carregarLotesAbertos() {
