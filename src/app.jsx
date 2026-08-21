@@ -486,7 +486,7 @@ useEffect(() => {
       showToast("Você não pode bloquear a si mesmo.", "warn");
       return;
     }
-    const ativosAdmin = users.filter((u) => u.perfil === "administrador" && u.status === "ativo");
+    const ativosAdmin = users.filter((u) => u.perfil === "Administrador" && u.status === "ativo");
     if (alvo.perfil === "Administrador" && alvo.status === "ativo" && ativosAdmin.length <= 1) {
       showToast("Não é possível bloquear o único Administrador ativo.", "warn");
       return;
@@ -949,7 +949,81 @@ async function garantirLoteDoDia() {
   showToast("Embalagem registrada com sucesso.");
   return atualizado;
 }
+async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
+  const { data: lotesDoPeriodo, error: erroLotes } = await supabase
+    .from('lotes')
+    .select('*')
+    .gte('data', dataInicio)
+    .lte('data', dataFim);
 
+  if (erroLotes) {
+    console.error('Erro ao carregar lotes do período:', erroLotes);
+    return [];
+  }
+  if (!lotesDoPeriodo || lotesDoPeriodo.length === 0) return [];
+
+  const loteIds = lotesDoPeriodo.map((l) => l.id);
+
+  const { data: registros, error: erroRegistros } = await supabase
+    .from('registros_producao')
+    .select('*')
+    .in('lote_id', loteIds);
+
+  if (erroRegistros) {
+    console.error('Erro ao carregar registros do período:', erroRegistros);
+    return [];
+  }
+
+  function nomeUsuario(responsavelId) {
+    const u = users.find((x) => x.id === responsavelId);
+    return u ? u.nome : "—";
+  }
+
+  function paraItemLocal(r) {
+    return {
+      id: r.id,
+      produtoId: r.produto_id,
+      peso: r.peso,
+      perda: r.perda,
+      quantidadeEmbalada: r.quantidade_embalada,
+      unidadesPorPacote: r.unidades_por_pacote,
+      pacotesGerados: r.pacotes_gerados,
+      dataValidade: r.data_validade,
+      observacoes: r.observacoes,
+      turno: r.turno,
+      usuario: nomeUsuario(r.responsavel_id),
+      horario: r.created_at,
+    };
+  }
+
+  return lotesDoPeriodo.map((l) => {
+    const registrosDoLote = registros.filter((r) => r.lote_id === l.id);
+    return {
+      numero: l.numero,
+      ano: l.ano,
+      data: l.data,
+      status: l.status,
+      recheios: registrosDoLote.filter((r) => r.etapa === 'recheio').map(paraItemLocal),
+      massas: registrosDoLote.filter((r) => r.etapa === 'massa').map(paraItemLocal),
+      modelagens: registrosDoLote.filter((r) => r.etapa === 'modelagem').map(paraItemLocal),
+      embalagens: registrosDoLote.filter((r) => r.etapa === 'embalagem').map(paraItemLocal),
+      carrinhos: registrosDoLote
+        .filter((r) => r.etapa === 'carrinho')
+        .map((r) => ({
+          id: r.id,
+          produtoId: r.produto_id,
+          quantidade: r.carrinhos_qtd,
+          observacoes: r.observacoes,
+          usuario: nomeUsuario(r.responsavel_id),
+          turno: r.turno,
+          horario: r.created_at,
+          status: "pendente",
+        })),
+      perdas: [],
+      finalizacoesEmbalagem: [],
+    };
+  });
+}
 
   async function carregarLotesAbertos() {
     try {
@@ -1087,7 +1161,7 @@ async function garantirLoteDoDia() {
   }
 
   async function editarSobraRegistro({ registroId, registroUsuario, produtoNome }, alteracoes) {
-    const souAdmin = currentUser.perfil === "Administrador";
+    const souAdmin = currentUser.perfil === "administrador";
     if (!souAdmin && registroUsuario !== currentUser.nome) {
       showToast("Você só pode editar os seus próprios lançamentos.", "warn");
       return false;
@@ -1188,7 +1262,7 @@ async function garantirLoteDoDia() {
   // Reabertura de lote fechado — somente Administrador. Reutiliza o mesmo lote
   // (mesmo número, mesmos dados); apenas destrava os lançamentos para correção.
   async function reabrirLote() {
-    if (currentUser.perfil !== "Administrador") {
+    if (currentUser.perfil !== "administrador") {
       showToast("Somente um Administrador pode reabrir um lote fechado.", "warn");
       return false;
     }
@@ -1387,11 +1461,11 @@ async function garantirLoteDoDia() {
           produtos={produtos}
           lote={lote}
           planos={planos}
-          historicoLotes={historicoLotes}
-          onCarregarHistorico={carregarHistoricoLotes}
+             onCarregarRegistrosDoPeriodo={carregarRegistrosDoPeriodo}
           onOpenPerdas={() => setScreen("perdas")}
           onBack={() => setScreen("none")}
         />
+      
       ) : screen === "perdas" ? (
         <PerdasScreen
           produtos={produtos}
@@ -1621,7 +1695,7 @@ function SignupScreen({ onSignup, onBack }) {
         </button>
         <div className="mb-6">
           <div className="font-bold text-xl" style={{ color: C.black }}>Solicitar cadastro</div>
-          <div className="text-sm" style={{ color: C.gray500 }}>Um administrador vai revisar seu acesso.</div>
+          <div className="text-sm" style={{ color: C.gray500 }}>Um Administrador vai revisar seu acesso.</div>
         </div>
         <div className="rounded-2xl p-6 space-y-4" style={{ background: C.white, boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.06)" }}>
           <Field icon={<User size={16} />} placeholder="Nome completo" value={nome} onChange={setNome} />
@@ -1661,8 +1735,8 @@ function Field({ icon, rightIcon, ...props }) {
 
 function Header({ user, profileOpen, setProfileOpen, onLogout, onOpenPlanejamento, onOpenSobras, onOpenFechamento, onOpenAuditoria, onOpenProdutos, onOpenUsuarios, sobrasAlerta, requests, lote, turnoAtivo, setTurnoAtivo }) {
   const hoje = new Date().toLocaleDateString("pt-BR");
-  const podeGerenciar = user.perfil === "Administrador" || user.perfil === "Supervisor";
-  const totalNotificacoes = (sobrasAlerta || 0) + (user.perfil === "Administrador" ? (requests?.length || 0) : 0);
+  const podeGerenciar = user.perfil === "administrador" || user.perfil === "supervisor";
+  const totalNotificacoes = (sobrasAlerta || 0) + (user.perfil === "administrador" ? (requests?.length || 0) : 0);
   return (
     <header className="sticky top-0 z-20" style={{ background: C.red }}>
       <div className="max-w-md mx-auto px-4 py-3 flex items-center justify-between">
@@ -1733,22 +1807,22 @@ function Header({ user, profileOpen, setProfileOpen, onLogout, onOpenPlanejament
                     </span>
                   )}
                 </button>
-                {user.perfil === "Administrador" && (
+                {user.perfil === "administrador" && (
                   <button onClick={onOpenFechamento} className="w-full flex items-center gap-2 px-3 py-2.5 text-sm" style={{ color: C.gray900, borderBottom: `1px solid ${C.gray200}` }}>
                     <Lock size={14} /> Fechamento de Lote
                   </button>
                 )}
-                {user.perfil === "Administrador" && (
+                {user.perfil === "administrador" && (
                   <button onClick={onOpenAuditoria} className="w-full flex items-center gap-2 px-3 py-2.5 text-sm" style={{ color: C.gray900, borderBottom: `1px solid ${C.gray200}` }}>
                     <ShieldCheck size={14} /> Auditoria
                   </button>
                 )}
-                {user.perfil === "Administrador" && (
+                {user.perfil === "administrador" && (
                   <button onClick={onOpenProdutos} className="w-full flex items-center gap-2 px-3 py-2.5 text-sm" style={{ color: C.gray900, borderBottom: `1px solid ${C.gray200}` }}>
                     <Package size={14} /> Produtos
                   </button>
                 )}
-                {user.perfil === "Administrador" && (
+                {user.perfil === "administrador" && (
                   <button onClick={onOpenUsuarios} className="w-full flex items-center justify-between px-3 py-2.5 text-sm" style={{ color: C.gray900, borderBottom: `1px solid ${C.gray200}` }}>
                     <span className="flex items-center gap-2"><User size={14} /> Usuários</span>
                     {requests.length > 0 && (
@@ -1980,7 +2054,7 @@ function HomeTab({ user, requests, onApprove, sobras, onOpenSobras, onOpenDashbo
         </button>
       </div>
 
-      {user.perfil === "Administrador" && requests.length > 0 && (
+      {user.perfil === "administrador" && requests.length > 0 && (
         <div className="rounded-2xl p-5" style={{ background: C.white }}>
           <div className="font-semibold text-sm mb-3" style={{ color: C.black }}>
             Solicitações de cadastro ({requests.length})
@@ -3970,7 +4044,7 @@ function FechamentoScreen({ user, produtos, lote, planos, sobras, onFechar, onRe
 
   if (lote.status === "fechado") {
     const r = lote.fechamento?.resumo;
-    const souAdmin = user.perfil === "Administrador";
+    const souAdmin = user.perfil === "administrador";
     const listaReaberturas = lote.reaberturas || [];
     const ultimaReabertura = listaReaberturas[listaReaberturas.length - 1];
 
@@ -4424,7 +4498,7 @@ function RelatoriosTab({ user, produtos, planos, lote, historicoLotes, onCarrega
   const lotesRelatorio = todosLotes.filter((l) => dentroDoPeriodo(l.data)).sort((a, b) => (a.data < b.data ? -1 : 1));
 
   const nomeProduto = (id) => produtos.find((p) => p.id === id)?.nome || id;
-  const souAdmin = user.perfil === "Administrador";
+  const souAdmin = user.perfil === "administrador";
 
   // ---- Lançamentos do período, para a edição/correção (só aparece aqui, no Histórico/Relatórios) ----
   const lancamentosEditaveis = [];
@@ -4964,7 +5038,7 @@ function RelatoriosTab({ user, produtos, planos, lote, historicoLotes, onCarrega
                         ✏️ Editar
                       </button>
                     ) : (
-                      <span className="text-[11px]" style={{ color: C.gray500 }}>Somente o autor ou um administrador pode editar</span>
+                      <span className="text-[11px]" style={{ color: C.gray500 }}>Somente o autor ou um Administrador pode editar</span>
                     )}
                   </div>
                 </div>
@@ -5786,25 +5860,24 @@ function PerdasScreen({ produtos, lote, historicoLotes, onCarregarHistorico, onB
   );
 }
 
-function DashboardScreen({ produtos, lote, planos, historicoLotes, onCarregarHistorico, onOpenPerdas, onBack }) {
+function DashboardScreen({ produtos, lote, planos, onCarregarRegistrosDoPeriodo, onOpenPerdas, onBack }) {
   const [periodo, setPeriodo] = useState("hoje"); // hoje | semana | mes
   const [carregando, setCarregando] = useState(true);
-
+  const [todosLotes, setTodosLotes] = useState([]);
   useEffect(() => {
     (async () => {
-      await onCarregarHistorico();
+      const noventaDiasAtras = new Date();
+      noventaDiasAtras.setDate(noventaDiasAtras.getDate() - 90);
+      const inicioISO = noventaDiasAtras.toISOString().slice(0, 10);
+      const doSupabase = await onCarregarRegistrosDoPeriodo(inicioISO, localISO());
+      setTodosLotes(doSupabase);
       setCarregando(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
   const hojeISO = localISO();
   const semanaAtual = segundaFeiraDe(hojeISO);
   const mesAtual = hojeISO.slice(0, 7); // YYYY-MM
-
-  // Junta o histórico carregado com o lote de hoje (que pode estar mais atualizado em memória)
-  const todosLotes = [...historicoLotes.filter((l) => !(l.ano === lote.ano && l.numero === lote.numero)), lote];
-
   const lotesPeriodo = todosLotes.filter((l) => {
     if (periodo === "hoje") return l.data === hojeISO;
     if (periodo === "semana") return l.data >= semanaAtual && l.data <= hojeISO;
