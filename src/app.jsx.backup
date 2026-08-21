@@ -486,7 +486,7 @@ useEffect(() => {
       showToast("Você não pode bloquear a si mesmo.", "warn");
       return;
     }
-    const ativosAdmin = users.filter((u) => u.perfil === "Administrador" && u.status === "ativo");
+    const ativosAdmin = users.filter((u) => u.perfil === "administrador" && u.status === "ativo");
     if (alvo.perfil === "Administrador" && alvo.status === "ativo" && ativosAdmin.length <= 1) {
       showToast("Não é possível bloquear o único Administrador ativo.", "warn");
       return;
@@ -1161,7 +1161,7 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
   }
 
   async function editarSobraRegistro({ registroId, registroUsuario, produtoNome }, alteracoes) {
-    const souAdmin = currentUser.perfil === "administrador";
+    const souAdmin = currentUser.perfil === "Administrador";
     if (!souAdmin && registroUsuario !== currentUser.nome) {
       showToast("Você só pode editar os seus próprios lançamentos.", "warn");
       return false;
@@ -1262,7 +1262,7 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
   // Reabertura de lote fechado — somente Administrador. Reutiliza o mesmo lote
   // (mesmo número, mesmos dados); apenas destrava os lançamentos para correção.
   async function reabrirLote() {
-    if (currentUser.perfil !== "administrador") {
+    if (currentUser.perfil !== "Administrador") {
       showToast("Somente um Administrador pode reabrir um lote fechado.", "warn");
       return false;
     }
@@ -1323,24 +1323,16 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
 }
 
   async function handleSignup({ nome, usuario, senha }) {
-    const email = usuario.trim().toLowerCase();
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password: senha,
-      options: {
-        data: { nome: nome.trim(), usuario: email },
-      },
-    });
-    if (error) {
-      console.error('Erro no cadastro:', error);
-      if (error.message?.includes('already registered') || error.message?.includes('already been registered')) {
-        return { ok: false, msg: "Esse e-mail já está cadastrado." };
-      }
-      return { ok: false, msg: "Não foi possível concluir o cadastro. Tente novamente." };
+    if (users.some((x) => x.usuario === usuario) || requests.some((x) => x.usuario === usuario)) {
+      return { ok: false, msg: "Esse nome de usuário já está em uso ou aguardando aprovação." };
     }
-    await supabase.auth.signOut();
+    const salt = gerarSaltHex();
+    const senhaHash = await hashSenha(senha, salt);
+    const novo = { id: "r" + Date.now(), nome, usuario, salt, senhaHash, status: "pendente", data: new Date().toISOString() };
+    await persistRequests([...requests, novo]);
     return { ok: true };
   }
+
   async function approveRequest(reqId, approve) {
     const req = requests.find((r) => r.id === reqId);
     if (!req) return;
@@ -1469,11 +1461,11 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
           produtos={produtos}
           lote={lote}
           planos={planos}
-             onCarregarRegistrosDoPeriodo={carregarRegistrosDoPeriodo}
+          historicoLotes={historicoLotes}
+          onCarregarHistorico={carregarHistoricoLotes}
           onOpenPerdas={() => setScreen("perdas")}
           onBack={() => setScreen("none")}
         />
-      
       ) : screen === "perdas" ? (
         <PerdasScreen
           produtos={produtos}
@@ -1674,7 +1666,6 @@ function SignupScreen({ onSignup, onBack }) {
   async function submit() {
     setError("");
     if (!nome || !usuario || !senha) return setError("Preencha todos os campos.");
-    if (senha.length < 6) return setError("A senha precisa ter pelo menos 6 caracteres.");
     if (senha !== confirmar) return setError("As senhas não coincidem.");
     const r = await onSignup({ nome: nome.trim(), usuario: usuario.trim(), senha });
     if (!r.ok) return setError(r.msg);
@@ -1704,7 +1695,7 @@ function SignupScreen({ onSignup, onBack }) {
         </button>
         <div className="mb-6">
           <div className="font-bold text-xl" style={{ color: C.black }}>Solicitar cadastro</div>
-          <div className="text-sm" style={{ color: C.gray500 }}>Um Administrador vai revisar seu acesso.</div>
+          <div className="text-sm" style={{ color: C.gray500 }}>Um administrador vai revisar seu acesso.</div>
         </div>
         <div className="rounded-2xl p-6 space-y-4" style={{ background: C.white, boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.06)" }}>
           <Field icon={<User size={16} />} placeholder="Nome completo" value={nome} onChange={setNome} />
@@ -1744,8 +1735,8 @@ function Field({ icon, rightIcon, ...props }) {
 
 function Header({ user, profileOpen, setProfileOpen, onLogout, onOpenPlanejamento, onOpenSobras, onOpenFechamento, onOpenAuditoria, onOpenProdutos, onOpenUsuarios, sobrasAlerta, requests, lote, turnoAtivo, setTurnoAtivo }) {
   const hoje = new Date().toLocaleDateString("pt-BR");
-  const podeGerenciar = user.perfil === "administrador" || user.perfil === "supervisor";
-  const totalNotificacoes = (sobrasAlerta || 0) + (user.perfil === "administrador" ? (requests?.length || 0) : 0);
+  const podeGerenciar = user.perfil === "Administrador" || user.perfil === "Supervisor";
+  const totalNotificacoes = (sobrasAlerta || 0) + (user.perfil === "Administrador" ? (requests?.length || 0) : 0);
   return (
     <header className="sticky top-0 z-20" style={{ background: C.red }}>
       <div className="max-w-md mx-auto px-4 py-3 flex items-center justify-between">
@@ -1816,22 +1807,22 @@ function Header({ user, profileOpen, setProfileOpen, onLogout, onOpenPlanejament
                     </span>
                   )}
                 </button>
-                {user.perfil === "administrador" && (
+                {user.perfil === "Administrador" && (
                   <button onClick={onOpenFechamento} className="w-full flex items-center gap-2 px-3 py-2.5 text-sm" style={{ color: C.gray900, borderBottom: `1px solid ${C.gray200}` }}>
                     <Lock size={14} /> Fechamento de Lote
                   </button>
                 )}
-                {user.perfil === "administrador" && (
+                {user.perfil === "Administrador" && (
                   <button onClick={onOpenAuditoria} className="w-full flex items-center gap-2 px-3 py-2.5 text-sm" style={{ color: C.gray900, borderBottom: `1px solid ${C.gray200}` }}>
                     <ShieldCheck size={14} /> Auditoria
                   </button>
                 )}
-                {user.perfil === "administrador" && (
+                {user.perfil === "Administrador" && (
                   <button onClick={onOpenProdutos} className="w-full flex items-center gap-2 px-3 py-2.5 text-sm" style={{ color: C.gray900, borderBottom: `1px solid ${C.gray200}` }}>
                     <Package size={14} /> Produtos
                   </button>
                 )}
-                {user.perfil === "administrador" && (
+                {user.perfil === "Administrador" && (
                   <button onClick={onOpenUsuarios} className="w-full flex items-center justify-between px-3 py-2.5 text-sm" style={{ color: C.gray900, borderBottom: `1px solid ${C.gray200}` }}>
                     <span className="flex items-center gap-2"><User size={14} /> Usuários</span>
                     {requests.length > 0 && (
@@ -2063,7 +2054,7 @@ function HomeTab({ user, requests, onApprove, sobras, onOpenSobras, onOpenDashbo
         </button>
       </div>
 
-      {user.perfil === "administrador" && requests.length > 0 && (
+      {user.perfil === "Administrador" && requests.length > 0 && (
         <div className="rounded-2xl p-5" style={{ background: C.white }}>
           <div className="font-semibold text-sm mb-3" style={{ color: C.black }}>
             Solicitações de cadastro ({requests.length})
@@ -4053,7 +4044,7 @@ function FechamentoScreen({ user, produtos, lote, planos, sobras, onFechar, onRe
 
   if (lote.status === "fechado") {
     const r = lote.fechamento?.resumo;
-    const souAdmin = user.perfil === "administrador";
+    const souAdmin = user.perfil === "Administrador";
     const listaReaberturas = lote.reaberturas || [];
     const ultimaReabertura = listaReaberturas[listaReaberturas.length - 1];
 
@@ -4507,7 +4498,7 @@ function RelatoriosTab({ user, produtos, planos, lote, historicoLotes, onCarrega
   const lotesRelatorio = todosLotes.filter((l) => dentroDoPeriodo(l.data)).sort((a, b) => (a.data < b.data ? -1 : 1));
 
   const nomeProduto = (id) => produtos.find((p) => p.id === id)?.nome || id;
-  const souAdmin = user.perfil === "administrador";
+  const souAdmin = user.perfil === "Administrador";
 
   // ---- Lançamentos do período, para a edição/correção (só aparece aqui, no Histórico/Relatórios) ----
   const lancamentosEditaveis = [];
@@ -5047,7 +5038,7 @@ function RelatoriosTab({ user, produtos, planos, lote, historicoLotes, onCarrega
                         ✏️ Editar
                       </button>
                     ) : (
-                      <span className="text-[11px]" style={{ color: C.gray500 }}>Somente o autor ou um Administrador pode editar</span>
+                      <span className="text-[11px]" style={{ color: C.gray500 }}>Somente o autor ou um administrador pode editar</span>
                     )}
                   </div>
                 </div>
@@ -5869,24 +5860,25 @@ function PerdasScreen({ produtos, lote, historicoLotes, onCarregarHistorico, onB
   );
 }
 
-function DashboardScreen({ produtos, lote, planos, onCarregarRegistrosDoPeriodo, onOpenPerdas, onBack }) {
+function DashboardScreen({ produtos, lote, planos, historicoLotes, onCarregarHistorico, onOpenPerdas, onBack }) {
   const [periodo, setPeriodo] = useState("hoje"); // hoje | semana | mes
   const [carregando, setCarregando] = useState(true);
-  const [todosLotes, setTodosLotes] = useState([]);
+
   useEffect(() => {
     (async () => {
-      const noventaDiasAtras = new Date();
-      noventaDiasAtras.setDate(noventaDiasAtras.getDate() - 90);
-      const inicioISO = noventaDiasAtras.toISOString().slice(0, 10);
-      const doSupabase = await onCarregarRegistrosDoPeriodo(inicioISO, localISO());
-      setTodosLotes(doSupabase);
+      await onCarregarHistorico();
       setCarregando(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
   const hojeISO = localISO();
   const semanaAtual = segundaFeiraDe(hojeISO);
   const mesAtual = hojeISO.slice(0, 7); // YYYY-MM
+
+  // Junta o histórico carregado com o lote de hoje (que pode estar mais atualizado em memória)
+  const todosLotes = [...historicoLotes.filter((l) => !(l.ano === lote.ano && l.numero === lote.numero)), lote];
+
   const lotesPeriodo = todosLotes.filter((l) => {
     if (periodo === "hoje") return l.data === hojeISO;
     if (periodo === "semana") return l.data >= semanaAtual && l.data <= hojeISO;
