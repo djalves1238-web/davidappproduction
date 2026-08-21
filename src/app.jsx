@@ -448,35 +448,41 @@ useEffect(() => {
     }
   }
 
+  async function carregarUsuarios() {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, nome, usuario, perfil, status');
+    if (error) {
+      console.error('Erro ao carregar usuários:', error);
+      return;
+    }
+    setUsers(data || []);
+  }
+
   async function salvarUsuario(dados, idExistente) {
-    const next = users.map((u) => (u.id === idExistente ? { ...u, ...dados } : u));
-    await persistUsers(next);
+    const { error } = await supabase
+      .from('profiles')
+      .update({ nome: dados.nome, perfil: dados.perfil })
+      .eq('id', idExistente);
+    if (error) {
+      console.error('Erro ao salvar usuário:', error);
+      showToast("Não foi possível salvar. Tente novamente.", "warn");
+      return;
+    }
     registrarLog("usuario_editado", currentUser.nome, `${dados.nome || ""} (perfil: ${dados.perfil})`);
     showToast("Usuário atualizado com sucesso.");
+    await carregarUsuarios();
   }
 
-  async function criarUsuarioDireto({ nome, usuario, senha, perfil }) {
-    if (users.some((x) => x.usuario === usuario) || requests.some((x) => x.usuario === usuario)) {
-      return { ok: false, msg: "Esse nome de usuário já está em uso." };
+  async function redefinirSenhaUsuario(usuarioEmail) {
+    const { error } = await supabase.auth.resetPasswordForEmail(usuarioEmail);
+    if (error) {
+      console.error('Erro ao enviar e-mail de redefinição:', error);
+      showToast("Não foi possível enviar o e-mail. Tente novamente.", "warn");
+      return;
     }
-    const salt = gerarSaltHex();
-    const senhaHash = await hashSenha(senha, salt);
-    const novo = { id: "u" + Date.now(), nome, usuario, salt, senhaHash, perfil, status: "ativo" };
-    await persistUsers([...users, novo]);
-    registrarLog("usuario_criado", currentUser.nome, `${nome} (@${usuario}, perfil: ${perfil})`);
-    showToast("Usuário criado com sucesso.");
-    return { ok: true };
-  }
-
-  async function redefinirSenhaUsuario(userId, novaSenha) {
-    const alvo = users.find((u) => u.id === userId);
-    if (!alvo) return;
-    const salt = gerarSaltHex();
-    const senhaHash = await hashSenha(novaSenha, salt);
-    const next = users.map((u) => (u.id === userId ? { ...u, salt, senhaHash } : u));
-    await persistUsers(next);
-    registrarLog("senha_redefinida", currentUser.nome, `Redefiniu a senha de ${alvo.nome}`);
-    showToast(`Senha de ${alvo.nome} redefinida.`);
+    registrarLog("senha_redefinida", currentUser.nome, `Enviou redefinição de senha para ${usuarioEmail}`);
+    showToast(`E-mail de redefinição enviado para ${usuarioEmail}.`);
   }
 
   async function alternarStatusUsuario(userId) {
@@ -486,16 +492,24 @@ useEffect(() => {
       showToast("Você não pode bloquear a si mesmo.", "warn");
       return;
     }
-    const ativosAdmin = users.filter((u) => u.perfil === "Administrador" && u.status === "ativo");
-    if (alvo.perfil === "Administrador" && alvo.status === "ativo" && ativosAdmin.length <= 1) {
+    const ativosAdmin = users.filter((u) => u.perfil === "administrador" && u.status === "ativo");
+    if (alvo.perfil === "administrador" && alvo.status === "ativo" && ativosAdmin.length <= 1) {
       showToast("Não é possível bloquear o único Administrador ativo.", "warn");
       return;
     }
-    const novoStatus = alvo.status === "ativo" ? "bloqueado" : "ativo";
-    const next = users.map((u) => (u.id === userId ? { ...u, status: novoStatus } : u));
-    await persistUsers(next);
-    registrarLog(novoStatus === "bloqueado" ? "usuario_bloqueado" : "usuario_desbloqueado", currentUser.nome, alvo.nome);
-    showToast(`${alvo.nome} ${novoStatus === "bloqueado" ? "bloqueado" : "reativado"}.`);
+    const novoStatus = alvo.status === "ativo" ? "inativo" : "ativo";
+    const { error } = await supabase
+      .from('profiles')
+      .update({ status: novoStatus })
+      .eq('id', userId);
+    if (error) {
+      console.error('Erro ao alternar status:', error);
+      showToast("Não foi possível atualizar. Tente novamente.", "warn");
+      return;
+    }
+    registrarLog(novoStatus === "inativo" ? "usuario_bloqueado" : "usuario_desbloqueado", currentUser.nome, alvo.nome);
+    showToast(`${alvo.nome} ${novoStatus === "inativo" ? "bloqueado" : "reativado"}.`);
+    await carregarUsuarios();
   }
 
   async function excluirUsuario(userId) {
@@ -1319,6 +1333,8 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
   setCurrentUser(found);
   setView("app");
   registrarLog("login", found.nome, `usuário: ${found.usuario}`);
+  await carregarSolicitacoesPendentes();
+  await carregarUsuarios();
   return { ok: true };
 }
 
@@ -1341,19 +1357,39 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
     await supabase.auth.signOut();
     return { ok: true };
   }
+  async function carregarSolicitacoesPendentes() {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, nome, usuario')
+      .eq('status', 'inativo');
+    if (error) {
+      console.error('Erro ao carregar solicitações pendentes:', error);
+      return;
+    }
+    setRequests(data || []);
+  }
+
   async function approveRequest(reqId, approve) {
     const req = requests.find((r) => r.id === reqId);
     if (!req) return;
+    const novoStatus = approve ? "ativo" : "recusado";
+    const { error } = await supabase
+      .from('profiles')
+      .update({ status: novoStatus })
+      .eq('id', reqId);
+    if (error) {
+      console.error('Erro ao atualizar status do cadastro:', error);
+      showToast("Não foi possível atualizar o cadastro. Tente novamente.", "warn");
+      return;
+    }
     if (approve) {
-      const novoUsuario = { id: "u" + Date.now(), nome: req.nome, usuario: req.usuario, salt: req.salt, senhaHash: req.senhaHash, perfil: "Produção", status: "ativo" };
-      await persistUsers([...users, novoUsuario]);
-      registrarLog("cadastro_aprovado", currentUser.nome, `Aprovou ${req.nome} (@${req.usuario})`);
+      registrarLog("cadastro_aprovado", currentUser.nome, `Aprovou ${req.nome} (${req.usuario})`);
       showToast(`${req.nome} aprovado como usuário.`);
     } else {
-      registrarLog("cadastro_recusado", currentUser.nome, `Recusou ${req.nome} (@${req.usuario})`);
+      registrarLog("cadastro_recusado", currentUser.nome, `Recusou ${req.nome} (${req.usuario})`);
       showToast(`Solicitação de ${req.nome} recusada.`, "warn");
     }
-    await persistRequests(requests.filter((r) => r.id !== reqId));
+    await carregarSolicitacoesPendentes();
   }
 
   function logout() {
@@ -1457,10 +1493,8 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
           users={users}
           requests={requests}
           onSalvar={salvarUsuario}
-          onCriar={criarUsuarioDireto}
           onResetSenha={redefinirSenhaUsuario}
           onAlternarStatus={alternarStatusUsuario}
-          onExcluir={excluirUsuario}
           onAprovar={approveRequest}
           onBack={() => setScreen("none")}
         />
@@ -4327,9 +4361,15 @@ const LOG_TIPO_ICONE = {
 };
 
 const PERFIL_COR = {
-  Administrador: { bg: "#FEE2E2", cor: "#B91C1C" },
-  Supervisor: { bg: "#FEF3C7", cor: "#92400E" },
-  "Produção": { bg: "#DBEAFE", cor: "#1D4ED8" },
+  administrador: { bg: "#FEE2E2", cor: "#B91C1C" },
+  supervisor: { bg: "#FEF3C7", cor: "#92400E" },
+  operador: { bg: "#DBEAFE", cor: "#1D4ED8" },
+};
+
+const PERFIL_LABEL = {
+  administrador: "Administrador",
+  supervisor: "Supervisor",
+  operador: "Operador",
 };
 
 // Modal genérico para corrigir um registro já lançado (recheio, massa,
@@ -5071,11 +5111,11 @@ function RelatoriosTab({ user, produtos, planos, lote, historicoLotes, onCarrega
   );
 }
 
-function UsuariosScreen({ currentUser, users, requests, onSalvar, onCriar, onResetSenha, onAlternarStatus, onExcluir, onAprovar, onBack }) {
-  const [editando, setEditando] = useState(null); // null | id do usuário | "novo"
+function UsuariosScreen({ currentUser, users, requests, onSalvar, onResetSenha, onAlternarStatus, onAprovar, onBack }) {
+  const [editando, setEditando] = useState(null); // null | id do usuário
 
   if (editando !== null) {
-    const usuarioAtual = editando === "novo" ? null : users.find((u) => u.id === editando);
+    const usuarioAtual = users.find((u) => u.id === editando);
     return (
       <UsuarioForm
         usuario={usuarioAtual}
@@ -5084,18 +5124,9 @@ function UsuariosScreen({ currentUser, users, requests, onSalvar, onCriar, onRes
           await onSalvar(dados, usuarioAtual.id);
           setEditando(null);
         }}
-        onCriar={async (dados) => {
-          const r = await onCriar(dados);
-          if (r.ok) setEditando(null);
-          return r;
-        }}
         onResetSenha={onResetSenha}
         onAlternarStatus={async (id) => {
           await onAlternarStatus(id);
-          setEditando(null);
-        }}
-        onExcluir={async (id) => {
-          await onExcluir(id);
           setEditando(null);
         }}
         onCancelar={() => setEditando(null)}
@@ -5112,7 +5143,7 @@ function UsuariosScreen({ currentUser, users, requests, onSalvar, onCriar, onRes
       </button>
 
       <div className="font-bold text-lg mb-1" style={{ color: C.black }}>Usuários</div>
-      <div className="text-sm mb-4" style={{ color: C.gray500 }}>Gerencie perfis, senhas e acessos da equipe.</div>
+      <div className="text-sm mb-4" style={{ color: C.gray500 }}>Gerencie perfis e acessos da equipe.</div>
 
       {requests.length > 0 && (
         <div className="rounded-2xl p-4 mb-4" style={{ background: C.white }}>
@@ -5122,7 +5153,7 @@ function UsuariosScreen({ currentUser, users, requests, onSalvar, onCriar, onRes
               <div key={r.id} className="flex items-center justify-between rounded-xl px-3 py-2.5" style={{ background: C.gray100 }}>
                 <div>
                   <div className="text-sm font-medium" style={{ color: C.black }}>{r.nome}</div>
-                  <div className="text-xs" style={{ color: C.gray500 }}>@{r.usuario}</div>
+                  <div className="text-xs" style={{ color: C.gray500 }}>{r.usuario}</div>
                 </div>
                 <div className="flex gap-2">
                   <button onClick={() => onAprovar(r.id, true)} className="w-8 h-8 rounded-lg flex items-center justify-center text-white" style={{ background: C.red }}>
@@ -5138,13 +5169,9 @@ function UsuariosScreen({ currentUser, users, requests, onSalvar, onCriar, onRes
         </div>
       )}
 
-      <button
-        onClick={() => setEditando("novo")}
-        className="w-full flex items-center justify-center gap-2 rounded-xl py-3 font-semibold text-white text-sm mb-4"
-        style={{ background: C.red }}
-      >
-        <Plus size={16} /> Criar Usuário
-      </button>
+      <div className="rounded-2xl p-3 mb-4 text-xs" style={{ background: C.gray100, color: C.gray500 }}>
+        Novos usuários se cadastram sozinhos pela tela de login ("Solicitar cadastro") e aparecem aqui para sua aprovação.
+      </div>
 
       <div className="space-y-2">
         {ordenados.map((u) => {
@@ -5157,11 +5184,11 @@ function UsuariosScreen({ currentUser, users, requests, onSalvar, onCriar, onRes
               </div>
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium truncate" style={{ color: C.black }}>{u.nome} {u.id === currentUser.id && <span style={{ color: C.gray500 }}>(você)</span>}</div>
-                <div className="text-[11px]" style={{ color: C.gray500 }}>@{u.usuario}</div>
+                <div className="text-[11px] truncate" style={{ color: C.gray500 }}>{u.usuario}</div>
               </div>
               <div className="flex flex-col items-end gap-1 shrink-0">
                 <span className="text-[10px] font-semibold px-2 py-1 rounded-full" style={{ background: perfilCor.bg, color: perfilCor.cor }}>
-                  {u.perfil}
+                  {PERFIL_LABEL[u.perfil] || u.perfil}
                 </span>
                 {bloqueado && (
                   <span className="text-[10px] font-semibold px-2 py-1 rounded-full" style={{ background: C.gray100, color: C.gray500 }}>
@@ -5177,69 +5204,35 @@ function UsuariosScreen({ currentUser, users, requests, onSalvar, onCriar, onRes
   );
 }
 
-function UsuarioForm({ usuario, souEu, onSalvarEdicao, onCriar, onResetSenha, onAlternarStatus, onExcluir, onCancelar }) {
-  const novo = !usuario;
+function UsuarioForm({ usuario, souEu, onSalvarEdicao, onResetSenha, onAlternarStatus, onCancelar }) {
   const [nome, setNome] = useState(usuario?.nome || "");
-  const [perfil, setPerfil] = useState(usuario?.perfil || "Produção");
-  const [usuarioLogin, setUsuarioLogin] = useState("");
-  const [senha, setSenha] = useState("");
-  const [confirmar, setConfirmar] = useState("");
+  const [perfil, setPerfil] = useState(usuario?.perfil || "operador");
   const [erro, setErro] = useState("");
   const [salvando, setSalvando] = useState(false);
   const lockRef = useRef(false);
 
-  const [novaSenha, setNovaSenha] = useState("");
-  const [novaSenhaConfirmar, setNovaSenhaConfirmar] = useState("");
-  const [erroSenha, setErroSenha] = useState("");
-  const [redefinindo, setRedefinindo] = useState(false);
-  const senhaLockRef = useRef(false);
-
-  const [confirmandoExclusao, setConfirmandoExclusao] = useState(false);
-  const [excluindo, setExcluindo] = useState(false);
+  const [enviandoReset, setEnviandoReset] = useState(false);
 
   async function salvar() {
     if (lockRef.current) return;
-    if (novo) {
-      if (!nome.trim() || !usuarioLogin.trim() || !senha) return setErro("Preencha todos os campos.");
-      if (senha !== confirmar) return setErro("As senhas não coincidem.");
-      lockRef.current = true;
-      setErro("");
-      setSalvando(true);
-      try {
-        const r = await onCriar({ nome: nome.trim(), usuario: usuarioLogin.trim(), senha, perfil });
-        if (!r.ok) setErro(r.msg);
-      } finally {
-        lockRef.current = false;
-        setSalvando(false);
-      }
-    } else {
-      if (!nome.trim()) return setErro("Dê um nome ao usuário.");
-      lockRef.current = true;
-      setErro("");
-      setSalvando(true);
-      try {
-        await onSalvarEdicao({ nome: nome.trim(), perfil });
-      } finally {
-        lockRef.current = false;
-        setSalvando(false);
-      }
+    if (!nome.trim()) return setErro("Dê um nome ao usuário.");
+    lockRef.current = true;
+    setErro("");
+    setSalvando(true);
+    try {
+      await onSalvarEdicao({ nome: nome.trim(), perfil });
+    } finally {
+      lockRef.current = false;
+      setSalvando(false);
     }
   }
 
-  async function confirmarNovaSenha() {
-    if (senhaLockRef.current) return;
-    if (!novaSenha || novaSenha.length < 4) return setErroSenha("A senha precisa ter pelo menos 4 caracteres.");
-    if (novaSenha !== novaSenhaConfirmar) return setErroSenha("As senhas não coincidem.");
-    senhaLockRef.current = true;
-    setErroSenha("");
-    setRedefinindo(true);
+  async function enviarResetSenha() {
+    setEnviandoReset(true);
     try {
-      await onResetSenha(usuario.id, novaSenha);
-      setNovaSenha("");
-      setNovaSenhaConfirmar("");
+      await onResetSenha(usuario.usuario);
     } finally {
-      senhaLockRef.current = false;
-      setRedefinindo(false);
+      setEnviandoReset(false);
     }
   }
 
@@ -5250,7 +5243,7 @@ function UsuarioForm({ usuario, souEu, onSalvarEdicao, onCriar, onResetSenha, on
       </button>
 
       <div className="font-bold text-lg mb-4" style={{ color: C.black }}>
-        {novo ? "Criar Usuário" : `Editar — ${usuario.nome}`}
+        Editar — {usuario.nome}
       </div>
 
       <div className="rounded-2xl p-4 mb-4" style={{ background: C.white }}>
@@ -5258,96 +5251,40 @@ function UsuarioForm({ usuario, souEu, onSalvarEdicao, onCriar, onResetSenha, on
         <input type="text" value={nome} onChange={(e) => setNome(e.target.value)}
           className="w-full rounded-lg px-3 py-2 text-sm outline-none mt-1 mb-3" style={{ background: C.gray100, color: C.black }} />
 
-        {novo ? (
-          <>
-            <label className="text-xs font-semibold" style={{ color: C.gray500 }}>Usuário (login)</label>
-            <input type="text" autoCapitalize="none" autoCorrect="off" value={usuarioLogin} onChange={(e) => setUsuarioLogin(e.target.value)}
-              className="w-full rounded-lg px-3 py-2 text-sm outline-none mt-1 mb-3" style={{ background: C.gray100, color: C.black }} />
-            <div className="grid grid-cols-2 gap-3 mb-3">
-              <div>
-                <label className="text-xs font-semibold" style={{ color: C.gray500 }}>Senha</label>
-                <input type="password" value={senha} onChange={(e) => setSenha(e.target.value)}
-                  className="w-full rounded-lg px-3 py-2 text-sm outline-none mt-1" style={{ background: C.gray100, color: C.black }} />
-              </div>
-              <div>
-                <label className="text-xs font-semibold" style={{ color: C.gray500 }}>Confirmar</label>
-                <input type="password" value={confirmar} onChange={(e) => setConfirmar(e.target.value)}
-                  className="w-full rounded-lg px-3 py-2 text-sm outline-none mt-1" style={{ background: C.gray100, color: C.black }} />
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="text-xs mb-3" style={{ color: C.gray500 }}>Usuário: <strong style={{ color: C.gray900 }}>@{usuario.usuario}</strong></div>
-        )}
+        <div className="text-xs mb-3" style={{ color: C.gray500 }}>E-mail: <strong style={{ color: C.gray900 }}>{usuario.usuario}</strong></div>
 
         <label className="text-xs font-semibold" style={{ color: C.gray500 }}>Perfil</label>
         <select value={perfil} onChange={(e) => setPerfil(e.target.value)}
           className="w-full rounded-lg px-3 py-2 text-sm outline-none mt-1" style={{ background: C.gray100, color: C.black }}>
-          <option value="Produção">Produção</option>
-          <option value="Supervisor">Supervisor</option>
-          <option value="Administrador">Administrador</option>
+          <option value="operador">Operador</option>
+          <option value="supervisor">Supervisor</option>
+          <option value="administrador">Administrador</option>
         </select>
 
         {erro && <div className="rounded-xl p-3 mt-3 text-sm" style={{ background: C.redSoft, color: C.redDark }}>{erro}</div>}
 
         <button onClick={salvar} disabled={salvando} className="w-full flex items-center justify-center gap-2 rounded-xl py-3 font-semibold text-white text-sm mt-3" style={{ background: C.red, opacity: salvando ? 0.6 : 1 }}>
-          <Save size={16} /> {salvando ? "Salvando..." : novo ? "Criar usuário" : "Salvar alterações"}
+          <Save size={16} /> {salvando ? "Salvando..." : "Salvar alterações"}
         </button>
       </div>
 
-      {!novo && (
-        <>
-          <div className="rounded-2xl p-4 mb-4" style={{ background: C.white }}>
-            <div className="font-semibold text-sm mb-2" style={{ color: C.black }}>Redefinir senha</div>
-            <div className="grid grid-cols-2 gap-3 mb-2">
-              <input type="password" placeholder="Nova senha" value={novaSenha} onChange={(e) => setNovaSenha(e.target.value)}
-                className="w-full rounded-lg px-3 py-2 text-sm outline-none" style={{ background: C.gray100, color: C.black }} />
-              <input type="password" placeholder="Confirmar" value={novaSenhaConfirmar} onChange={(e) => setNovaSenhaConfirmar(e.target.value)}
-                className="w-full rounded-lg px-3 py-2 text-sm outline-none" style={{ background: C.gray100, color: C.black }} />
-            </div>
-            {erroSenha && <div className="rounded-xl p-2.5 mb-2 text-xs" style={{ background: C.redSoft, color: C.redDark }}>{erroSenha}</div>}
-            <button onClick={confirmarNovaSenha} disabled={redefinindo} className="w-full rounded-xl py-2.5 text-sm font-semibold" style={{ background: C.gray100, color: C.gray900, opacity: redefinindo ? 0.6 : 1 }}>
-              {redefinindo ? "Redefinindo..." : "Redefinir senha"}
-            </button>
-          </div>
+      <div className="rounded-2xl p-4 mb-4" style={{ background: C.white }}>
+        <div className="font-semibold text-sm mb-2" style={{ color: C.black }}>Senha</div>
+        <div className="text-xs mb-3" style={{ color: C.gray500 }}>
+          Envia um e-mail para {usuario.usuario} com um link para definir uma nova senha.
+        </div>
+        <button onClick={enviarResetSenha} disabled={enviandoReset} className="w-full rounded-xl py-2.5 text-sm font-semibold" style={{ background: C.gray100, color: C.gray900, opacity: enviandoReset ? 0.6 : 1 }}>
+          {enviandoReset ? "Enviando..." : "Enviar e-mail de redefinição de senha"}
+        </button>
+      </div>
 
-          {!souEu && (
-            <div className="rounded-2xl p-4" style={{ background: C.white }}>
-              <div className="font-semibold text-sm mb-3" style={{ color: C.black }}>Acesso</div>
-              <button onClick={() => onAlternarStatus(usuario.id)} className="w-full rounded-xl py-2.5 text-sm font-semibold mb-2" style={{ background: usuario.status === "ativo" ? "#FEF3C7" : "#ECFDF5", color: usuario.status === "ativo" ? "#92400E" : "#059669" }}>
-                {usuario.status === "ativo" ? "🚫 Bloquear usuário" : "🔓 Reativar usuário"}
-              </button>
-
-              {!confirmandoExclusao ? (
-                <button onClick={() => setConfirmandoExclusao(true)} className="w-full rounded-xl py-2.5 text-sm font-semibold" style={{ background: C.redSoft, color: C.redDark }}>
-                  🗑️ Excluir usuário
-                </button>
-              ) : (
-                <div className="rounded-xl p-3" style={{ background: C.redSoft }}>
-                  <div className="text-xs font-semibold mb-2" style={{ color: C.redDark }}>Tem certeza? Essa ação não pode ser desfeita.</div>
-                  <div className="flex gap-2">
-                    <button onClick={() => setConfirmandoExclusao(false)} className="flex-1 rounded-lg py-2 text-xs font-semibold" style={{ background: C.white, color: C.gray900 }}>Cancelar</button>
-                    <button
-                      onClick={async () => {
-                        setExcluindo(true);
-                        try {
-                          await onExcluir(usuario.id);
-                        } finally {
-                          setExcluindo(false);
-                        }
-                      }}
-                      disabled={excluindo}
-                      className="flex-1 rounded-lg py-2 text-xs font-semibold text-white"
-                      style={{ background: C.redDark, opacity: excluindo ? 0.6 : 1 }}
-                    >
-                      {excluindo ? "Excluindo..." : "Sim, excluir"}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </>
+      {!souEu && (
+        <div className="rounded-2xl p-4" style={{ background: C.white }}>
+          <div className="font-semibold text-sm mb-3" style={{ color: C.black }}>Acesso</div>
+          <button onClick={() => onAlternarStatus(usuario.id)} className="w-full rounded-xl py-2.5 text-sm font-semibold" style={{ background: usuario.status === "ativo" ? "#FEF3C7" : "#ECFDF5", color: usuario.status === "ativo" ? "#92400E" : "#059669" }}>
+            {usuario.status === "ativo" ? "🚫 Bloquear usuário" : "🔓 Reativar usuário"}
+          </button>
+        </div>
       )}
     </main>
   );
