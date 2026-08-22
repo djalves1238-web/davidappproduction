@@ -591,21 +591,38 @@ useEffect(() => {
     }
   }
 
-  async function registrarLog(tipo, usuarioNome, detalhe) {
-    const novo = {
-      id: "lg" + Date.now() + Math.random().toString(36).slice(2, 6),
+  async function registrarLog(tipo, usuarioNome, detalhe, usuarioId) {
+    const idUsuario = usuarioId || currentUser?.id || null;
+    const { error } = await supabase.from('logs_acesso').insert({
       tipo,
-      usuario: usuarioNome,
+      usuario_id: idUsuario,
+      usuario_nome: usuarioNome,
       detalhe: detalhe || "",
-      horario: new Date().toISOString(),
-    };
-    const next = [...logs, novo].slice(-500); // mantém só os 500 mais recentes, pra não crescer sem limite
-    setLogs(next);
-    try {
-      await window.storage.set("logs", JSON.stringify(next), true);
-    } catch {
-      // registro de log não deve travar a experiência do usuário se falhar
+    });
+    if (error) {
+      console.error('Erro ao registrar log:', error);
     }
+  }
+
+  async function carregarLogsAcesso() {
+    const { data, error } = await supabase
+      .from('logs_acesso')
+      .select('id, tipo, usuario_nome, detalhe, created_at')
+      .order('created_at', { ascending: false })
+      .limit(500);
+    if (error) {
+      console.error('Erro ao carregar logs de acesso:', error);
+      return;
+    }
+    setLogs(
+      (data || []).map((lg) => ({
+        id: lg.id,
+        tipo: lg.tipo,
+        usuario: lg.usuario_nome,
+        detalhe: lg.detalhe,
+        horario: lg.created_at,
+      }))
+    );
   }
 
   async function persistProdutos(next) {
@@ -1332,9 +1349,10 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
 
   setCurrentUser(found);
   setView("app");
-  registrarLog("login", found.nome, `usuário: ${found.usuario}`);
+  registrarLog("login", found.nome, `usuário: ${found.usuario}`, found.id);
   await carregarSolicitacoesPendentes();
   await carregarUsuarios();
+  await carregarLogsAcesso();
   return { ok: true };
 }
 
