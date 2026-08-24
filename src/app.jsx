@@ -749,18 +749,21 @@ useEffect(() => {
       return;
     }
     if (sobra && sobra.peso > 0) {
-      const novaPerda = {
-        id: "pd" + Date.now(),
-        produtoId: sobra.produtoId,
-        etapa: sobra.etapa,
-        peso: sobra.peso,
-        motivo: "Sobra descartada (vencida ou não utilizada a tempo)",
-        origem: "sobra",
-        usuario: currentUser.nome,
-        turno: turnoAtivo,
-        horario: new Date().toISOString(),
-      };
-      await persistLote({ ...lote, perdas: [...(lote.perdas || []), novaPerda] });
+      const loteId = await garantirLoteDoDia();
+      if (loteId) {
+        const { error: erroPerda } = await supabase.from('registros_producao').insert({
+          lote_id: loteId,
+          produto_id: sobra.produtoId,
+          etapa: 'perda',
+          responsavel_id: currentUser.id,
+          turno: turnoAtivo,
+          peso: sobra.peso,
+          observacoes: "Sobra de " + sobra.etapa + " descartada (vencida ou não utilizada a tempo)",
+        });
+        if (erroPerda) {
+          console.error('Erro ao registrar perda da sobra:', erroPerda);
+        }
+      }
     }
     showToast("Sobra descartada e registrada como perda.", "warn");
     await carregarSobras();
@@ -1103,7 +1106,18 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
           horario: r.created_at,
           status: "pendente",
         })),
-      perdas: [],
+      perdas: registrosDoLote
+        .filter((r) => r.etapa === 'perda')
+        .map((r) => ({
+          id: r.id,
+          produtoId: r.produto_id,
+          etapa: 'sobra-descarte',
+          peso: r.peso,
+          turno: r.turno,
+          usuario: nomeUsuario(r.responsavel_id),
+          motivo: r.observacoes,
+          horario: r.created_at,
+        })),
       finalizacoesEmbalagem: [],
     };
   });
@@ -1585,9 +1599,7 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
       ) : screen === "perdas" ? (
         <PerdasScreen
           produtos={produtos}
-          lote={lote}
-          historicoLotes={historicoLotes}
-          onCarregarHistorico={carregarHistoricoLotes}
+          onCarregarRegistrosDoPeriodo={carregarRegistrosDoPeriodo}
           onBack={() => setScreen("none")}
         />
       ) : (
@@ -5731,16 +5743,21 @@ function AuditoriaScreen({ produtos, users, logs, lote, historicoLotes, onCarreg
   );
 }
 
-function PerdasScreen({ produtos, lote, historicoLotes, onCarregarHistorico, onBack }) {
+function PerdasScreen({ produtos, onCarregarRegistrosDoPeriodo, onBack }) {
   const [carregando, setCarregando] = useState(true);
   const [periodo, setPeriodo] = useState("semana"); // hoje | semana | mes | tudo
   const [filtroProduto, setFiltroProduto] = useState("todos");
   const [filtroEtapa, setFiltroEtapa] = useState("todas");
   const [filtroTurno, setFiltroTurno] = useState("todos");
+  const [todosLotes, setTodosLotes] = useState([]);
 
   useEffect(() => {
     (async () => {
-      await onCarregarHistorico();
+      const noventaDiasAtras = new Date();
+      noventaDiasAtras.setDate(noventaDiasAtras.getDate() - 90);
+      const inicioISO = noventaDiasAtras.toISOString().slice(0, 10);
+      const doSupabase = await onCarregarRegistrosDoPeriodo(inicioISO, localISO());
+      setTodosLotes(doSupabase);
       setCarregando(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -5752,9 +5769,6 @@ function PerdasScreen({ produtos, lote, historicoLotes, onCarregarHistorico, onB
   const hojeISO = localISO();
   const semanaAtual = segundaFeiraDe(hojeISO);
   const mesAtual = hojeISO.slice(0, 7);
-
-  const todosLotes = [...historicoLotes.filter((l) => !(l.ano === lote.ano && l.numero === lote.numero)), lote];
-
   const lotesPeriodo = todosLotes.filter((l) => {
     if (periodo === "hoje") return l.data === hojeISO;
     if (periodo === "semana") return l.data >= semanaAtual && l.data <= hojeISO;
