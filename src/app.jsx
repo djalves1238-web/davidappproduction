@@ -663,39 +663,91 @@ useEffect(() => {
     showToast(idExistente ? "Produto atualizado com sucesso." : "Produto cadastrado com sucesso.");
   }
 
+  async function carregarSobras() {
+    const { data, error } = await supabase
+      .from('sobras')
+      .select('*, lotes(numero, ano)');
+    if (error) {
+      console.error('Erro ao carregar sobras:', error);
+      return;
+    }
+    function nomeUsuario(id) {
+      const u = users.find((x) => x.id === id);
+      return u ? u.nome : "—";
+    }
+    setSobras(
+      (data || []).map((s) => ({
+        id: s.id,
+        produtoId: s.produto_id,
+        etapa: s.etapa,
+        peso: parseFloat(s.peso),
+        pesoOriginal: s.peso_original != null ? parseFloat(s.peso_original) : parseFloat(s.peso),
+        registradoEm: s.created_at,
+        validade: s.validade,
+        observacoes: s.observacoes || "",
+        usuario: nomeUsuario(s.responsavel_id),
+        loteOrigem: s.lotes?.numero ?? null,
+        turno: s.turno,
+        status: s.status,
+      }))
+    );
+  }
+
   async function addSobra(entrada) {
     const validade = new Date();
     validade.setDate(validade.getDate() + (parseInt(entrada.validadeDias) || 2));
     const pesoInicial = parseFloat(entrada.peso) || 0;
-    const nova = {
-      id: "sb" + Date.now(),
-      produtoId: entrada.produtoId,
+    const loteId = await garantirLoteDoDia();
+    if (!loteId) {
+      showToast("Erro ao identificar o lote do dia. Tente novamente.", "warn");
+      return;
+    }
+    const { error } = await supabase.from('sobras').insert({
+      produto_id: entrada.produtoId,
       etapa: entrada.etapa,
       peso: pesoInicial,
-      pesoOriginal: pesoInicial,
-      registradoEm: localISO(),
-      validadeDias: parseInt(entrada.validadeDias) || 2,
+      peso_original: pesoInicial,
       validade: localISO(validade),
       observacoes: entrada.observacoes || "",
-      usuario: currentUser.nome,
-      loteOrigem: lote?.numero || null,
+      responsavel_id: currentUser.id,
+      lote_id: loteId,
       turno: entrada.turno || turnoAtivo,
       status: "disponivel",
-    };
-    await persistSobras([...sobras, nova]);
+    });
+    if (error) {
+      console.error('Erro ao guardar sobra:', error);
+      showToast("Não foi possível guardar a sobra. Tente novamente.", "warn");
+      return;
+    }
     showToast("Sobra guardada com sucesso.");
+    await carregarSobras();
   }
 
   async function usarSobra(id) {
-    const next = sobras.map((s) => (s.id === id ? { ...s, peso: 0, status: "usada" } : s));
-    await persistSobras(next);
+    const { error } = await supabase
+      .from('sobras')
+      .update({ peso: 0, status: "usada" })
+      .eq('id', id);
+    if (error) {
+      console.error('Erro ao usar sobra:', error);
+      showToast("Não foi possível atualizar a sobra. Tente novamente.", "warn");
+      return;
+    }
     showToast("Sobra utilizada na produção.");
+    await carregarSobras();
   }
 
   async function descartarSobra(id) {
     const sobra = sobras.find((s) => s.id === id);
-    const next = sobras.map((s) => (s.id === id ? { ...s, status: "descartada" } : s));
-    await persistSobras(next);
+    const { error } = await supabase
+      .from('sobras')
+      .update({ status: "descartada" })
+      .eq('id', id);
+    if (error) {
+      console.error('Erro ao descartar sobra:', error);
+      showToast("Não foi possível descartar a sobra. Tente novamente.", "warn");
+      return;
+    }
     if (sobra && sobra.peso > 0) {
       const novaPerda = {
         id: "pd" + Date.now(),
@@ -711,6 +763,7 @@ useEffect(() => {
       await persistLote({ ...lote, perdas: [...(lote.perdas || []), novaPerda] });
     }
     showToast("Sobra descartada e registrada como perda.", "warn");
+    await carregarSobras();
   }
 
   async function garantirLotePorData(dataISO) {
@@ -1190,7 +1243,6 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
     showToast("✅ Alteração salva com sucesso.");
     return true;
   }
-
   async function editarSobraRegistro({ registroId, registroUsuario, produtoNome }, alteracoes) {
     const souAdmin = currentUser.perfil === "administrador";
     if (!souAdmin && registroUsuario !== currentUser.nome) {
@@ -1199,18 +1251,20 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
     }
     if (!alteracoes || Object.keys(alteracoes).length === 0) return true;
 
-    const idx = sobras.findIndex((s) => s.id === registroId);
-    if (idx === -1) {
-      showToast("Registro não encontrado — pode já ter sido alterado.", "warn");
-      return false;
-    }
     const camposNovos = {};
     Object.entries(alteracoes).forEach(([campo, { para }]) => {
       camposNovos[campo] = para;
     });
-    const novaLista = [...sobras];
-    novaLista[idx] = { ...novaLista[idx], ...camposNovos };
-    await persistSobras(novaLista);
+
+    const { error } = await supabase
+      .from('sobras')
+      .update(camposNovos)
+      .eq('id', registroId);
+    if (error) {
+      console.error('Erro ao editar sobra:', error);
+      showToast("Não foi possível salvar. Tente novamente.", "warn");
+      return false;
+    }
 
     for (const [campo, { de, para }] of Object.entries(alteracoes)) {
       const rotuloCampo = CAMPO_LABEL_AUDITORIA[campo] || campo;
@@ -1218,6 +1272,7 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
       await registrarLog("registro_editado", currentUser.nome, detalhe);
     }
 
+    await carregarSobras();
     showToast("✅ Alteração salva com sucesso.");
     return true;
   }
@@ -1353,6 +1408,7 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
   await carregarSolicitacoesPendentes();
   await carregarUsuarios();
   await carregarLogsAcesso();
+  await carregarSobras();
   return { ok: true };
 }
 
