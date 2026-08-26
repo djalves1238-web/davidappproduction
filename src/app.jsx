@@ -356,16 +356,7 @@ useEffect(() => {
         }
       }
 
-      try {
-        const res = await window.storage.get("planejamentos", true);
-        pl = JSON.parse(res.value);
-      } catch {
-        try {
-          await window.storage.set("planejamentos", JSON.stringify(pl), true);
-        } catch {
-          // segue com os dados em memória mesmo se o storage falhar
-        }
-      }
+      // planos agora carrega do Supabase apos o login (ver carregarPlanos())
 
       try {
         const res = await window.storage.get(loteKey, true);
@@ -538,13 +529,41 @@ useEffect(() => {
       showToast("Não foi possível sincronizar. Os dados ficaram salvos apenas neste dispositivo.", "warn");
     }
   }
-  async function persistPlanos(next) {
-    setPlanos(next);
-    try {
-      await window.storage.set("planejamentos", JSON.stringify(next), true);
-    } catch {
-      showToast("Não foi possível sincronizar. Os dados ficaram salvos apenas neste dispositivo.", "warn");
+  async function carregarPlanos() {
+    const { data, error } = await supabase
+      .from('planos')
+      .select('semana, dias, observacoes');
+    if (error) {
+      console.error('Erro ao carregar planos:', error);
+      return;
     }
+    setPlanos(
+      (data || []).map((p) => ({
+        semana: p.semana,
+        dias: p.dias || {},
+        observacoes: p.observacoes || "",
+      }))
+    );
+  }
+
+  async function salvarPlano(plano) {
+    const { error } = await supabase
+      .from('planos')
+      .upsert(
+        {
+          semana: plano.semana,
+          dias: plano.dias,
+          observacoes: plano.observacoes || "",
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'semana' }
+      );
+    if (error) {
+      console.error('Erro ao salvar plano:', error);
+      showToast("Não foi possível salvar o planejamento. Tente novamente.", "warn");
+      return;
+    }
+    await carregarPlanos();
   }
   async function persistLote(next) {
     setLote(next);
@@ -1423,6 +1442,7 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
   await carregarUsuarios();
   await carregarLogsAcesso();
   await carregarSobras();
+  await carregarPlanos();
   return { ok: true };
 }
 
@@ -1537,8 +1557,7 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
           produtos={produtos}
           planos={planos}
           onSave={async (plano) => {
-            const outros = planos.filter((p) => p.semana !== plano.semana);
-            await persistPlanos([...outros, plano]);
+            await salvarPlano(plano);
             showToast("Planejamento salvo com sucesso.");
           }}
           onBack={() => setScreen("none")}
