@@ -806,17 +806,7 @@ useEffect(() => {
     return existente.id;
   }
 
-  const { count, error: erroContagem } = await supabase
-    .from('lotes')
-    .select('*', { count: 'exact', head: true })
-    .eq('ano', ano);
-
-  if (erroContagem) {
-    console.error('Erro ao contar lotes do ano:', erroContagem);
-    return null;
-  }
-
-  const proximoNumero = (count ?? 0) + 1;
+  const proximoNumero = numeroLote(new Date(dataISO + "T00:00:00"));
 
   const { data: novoLote, error: erroInsercao } = await supabase
     .from('lotes')
