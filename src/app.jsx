@@ -1695,9 +1695,7 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
                 user={currentUser}
                 produtos={produtos}
                 planos={planos}
-                lote={lote}
-                historicoLotes={historicoLotes}
-                onCarregarHistorico={carregarHistoricoLotes}
+                onCarregarRegistrosDoPeriodo={carregarRegistrosDoPeriodo}
                 sobras={sobras}
                 onEditarLancamento={editarLancamento}
                 onEditarSobra={editarSobraRegistro}
@@ -4620,24 +4618,28 @@ function camposEditaveisPara(item) {
 
 const TIPO_LABEL_LANCAMENTO = { recheio: "Recheio", massa: "Massa", modelagem: "Modelagem", embalagem: "Embalagem", perda: "Perda (sobra descartada)", sobra: "Sobra em estoque" };
 
-function RelatoriosTab({ user, produtos, planos, lote, historicoLotes, onCarregarHistorico, sobras = [], onEditarLancamento, onEditarSobra }) {
+function RelatoriosTab({ user, produtos, planos, onCarregarRegistrosDoPeriodo, sobras = [], onEditarLancamento, onEditarSobra }) {
   const [tipo, setTipo] = useState("diario"); // diario | semanal | mensal
   const [dataRef, setDataRef] = useState(localISO());
   const [carregando, setCarregando] = useState(true);
   const [mensagem, setMensagem] = useState("");
   const [mostrarLancamentos, setMostrarLancamentos] = useState(false);
   const [editando, setEditando] = useState(null); // item selecionado para edição
+  const [todosLotes, setTodosLotes] = useState([]);
 
   useEffect(() => {
     (async () => {
-      await onCarregarHistorico();
+      const noventaDiasAtras = new Date();
+      noventaDiasAtras.setDate(noventaDiasAtras.getDate() - 90);
+      const inicioISO = noventaDiasAtras.toISOString().slice(0, 10);
+      const doSupabase = await onCarregarRegistrosDoPeriodo(inicioISO, localISO());
+      setTodosLotes(doSupabase);
       setCarregando(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const ativos = produtos.filter((p) => p.status === "ativo");
-  const todosLotes = [...historicoLotes.filter((l) => !(l.ano === lote.ano && l.numero === lote.numero)), lote];
 
   function dentroDoPeriodo(dataStr) {
     if (tipo === "diario") return dataStr === dataRef;
