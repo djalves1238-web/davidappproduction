@@ -270,6 +270,10 @@ useEffect(() => {
 }, []);
   const [planos, setPlanos] = useState([]);
   const [lote, setLote] = useState(null);
+  const loteRef = useRef(null);
+  useEffect(() => {
+    loteRef.current = lote;
+  }, [lote]);
   const [lotesAbertos, setLotesAbertos] = useState([]);
   const [historicoLotes, setHistoricoLotes] = useState([]);
   const [logs, setLogs] = useState([]);
@@ -566,6 +570,7 @@ useEffect(() => {
     await carregarPlanos();
   }
   async function persistLote(next) {
+    loteRef.current = next;
     setLote(next);
     try {
       await window.storage.set(loteKeyFor(new Date(next.data + "T00:00:00")), JSON.stringify(next), true);
@@ -867,7 +872,7 @@ async function garantirLoteDoDia() {
     usuario: currentUser.nome,
     horario: registroSalvo.created_at,
   };
-  await persistLote({ ...lote, recheios: [...lote.recheios, nova] });
+  await persistLote({ ...loteRef.current, recheios: [...loteRef.current.recheios, nova] });
   showToast("Recheio registrado com sucesso.");
 }
 
@@ -907,7 +912,7 @@ async function garantirLoteDoDia() {
     usuario: currentUser.nome,
     horario: registroSalvo.created_at,
   };
-  await persistLote({ ...lote, massas: [...lote.massas, nova] });
+  await persistLote({ ...loteRef.current, massas: [...loteRef.current.massas, nova] });
   showToast("Massa registrada com sucesso.");
 }
 
@@ -948,7 +953,7 @@ async function garantirLoteDoDia() {
     horario: registroSalvo.created_at,
   };
 
-  let carrinhosAtualizados = lote.carrinhos || [];
+  let carrinhosAtualizados = loteRef.current.carrinhos || [];
 
   if (parseInt(entrada.carrinhos) > 0) {
     const { data: carrinhoSalvo, error: erroCarrinho } = await supabase
@@ -984,7 +989,7 @@ async function garantirLoteDoDia() {
     }
   }
 
-  await persistLote({ ...lote, modelagens: [...lote.modelagens, nova], carrinhos: carrinhosAtualizados });
+  await persistLote({ ...loteRef.current, modelagens: [...loteRef.current.modelagens, nova], carrinhos: carrinhosAtualizados });
   showToast("Modelagem registrada com sucesso.");
 }
   async function addEmbalagem(entrada, loteAlvo) {
@@ -1040,7 +1045,7 @@ async function garantirLoteDoDia() {
     return atualizado;
   }
 
-  const atualizado = { ...lote, embalagens: [...lote.embalagens, nova] };
+  const atualizado = { ...loteRef.current, embalagens: [...loteRef.current.embalagens, nova] };
   await persistLote(atualizado);
   showToast("Embalagem registrada com sucesso.");
   return atualizado;
@@ -1207,7 +1212,19 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
 
   // ---------- Edição de registros já lançados (correções via Histórico/Relatórios) ----------
 
-  async function editarLancamento({ secao, loteAno, loteNumero, loteData, registroId, registroUsuario, produtoNome, etapaLabel }, alteracoes) {
+  const CAMPO_DB_REGISTRO = {
+    peso: "peso",
+    perda: "perda",
+    observacoes: "observacoes",
+    massaUtilizada: "massa_utilizada",
+    recheioUtilizado: "recheio_utilizado",
+    catupiryUtilizado: "catupiry_utilizado",
+    farinhaUtilizada: "farinha_utilizada",
+    quantidadeEmbalada: "quantidade_embalada",
+    unidadesPorPacote: "unidades_por_pacote",
+  };
+
+  async function editarLancamento({ secao, registroId, registroUsuario, produtoNome, etapaLabel }, alteracoes) {
     const souAdmin = currentUser.perfil === "administrador";
     if (!souAdmin && registroUsuario !== currentUser.nome) {
       showToast("Você só pode editar os seus próprios lançamentos.", "warn");
@@ -1215,57 +1232,33 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
     }
     if (!alteracoes || Object.keys(alteracoes).length === 0) return true;
 
-    const ehLoteAtual = lote && lote.ano === loteAno && lote.numero === loteNumero;
-    let alvo = ehLoteAtual ? lote : historicoLotes.find((l) => l.ano === loteAno && l.numero === loteNumero);
-    if (!alvo) {
-      try {
-        const res = await window.storage.get(loteKeyFor(new Date(loteData + "T00:00:00")), true);
-        alvo = JSON.parse(res.value);
-      } catch {
-        showToast("Não foi possível localizar o lote para editar.", "warn");
-        return false;
-      }
-    }
-
-    const lista = alvo[secao] || [];
-    const idx = lista.findIndex((r) => r.id === registroId);
-    if (idx === -1) {
-      showToast("Registro não encontrado — pode já ter sido alterado.", "warn");
-      return false;
-    }
-
     const camposNovos = {};
     Object.entries(alteracoes).forEach(([campo, { para }]) => {
-      camposNovos[campo] = para;
+      const coluna = CAMPO_DB_REGISTRO[campo];
+      if (coluna) camposNovos[coluna] = para;
     });
-    const novaLista = [...lista];
-    novaLista[idx] = { ...lista[idx], ...camposNovos };
-    const atualizado = { ...alvo, [secao]: novaLista };
+    if (Object.keys(camposNovos).length === 0) return true;
 
-    try {
-      await window.storage.set(loteKeyFor(new Date(atualizado.data + "T00:00:00")), JSON.stringify(atualizado), true);
-    } catch {
-      showToast("Não foi possível sincronizar a alteração. Tente novamente.", "warn");
+    const { error } = await supabase
+      .from('registros_producao')
+      .update(camposNovos)
+      .eq('id', registroId);
+    if (error) {
+      console.error('Erro ao editar lançamento:', error);
+      showToast("Não foi possível salvar. Tente novamente.", "warn");
       return false;
     }
-
-    if (ehLoteAtual) setLote(atualizado);
-    setHistoricoLotes((prev) => {
-      const existe = prev.some((l) => l.ano === atualizado.ano && l.numero === atualizado.numero);
-      return existe
-        ? prev.map((l) => (l.ano === atualizado.ano && l.numero === atualizado.numero ? atualizado : l))
-        : [...prev, atualizado];
-    });
 
     for (const [campo, { de, para }] of Object.entries(alteracoes)) {
       const rotuloCampo = CAMPO_LABEL_AUDITORIA[campo] || campo;
-      const detalhe = `Lote ${loteNumero} — ${etapaLabel}${produtoNome ? " " + produtoNome : ""} — ${rotuloCampo}: ${de ?? "-"} → ${para ?? "-"}`;
+      const detalhe = `${etapaLabel || secao}${produtoNome ? " " + produtoNome : ""} — ${rotuloCampo}: ${de ?? "-"} → ${para ?? "-"}`;
       await registrarLog("registro_editado", currentUser.nome, detalhe);
     }
 
     showToast("✅ Alteração salva com sucesso.");
     return true;
   }
+
   async function editarSobraRegistro({ registroId, registroUsuario, produtoNome }, alteracoes) {
     const souAdmin = currentUser.perfil === "administrador";
     if (!souAdmin && registroUsuario !== currentUser.nome) {
@@ -1301,7 +1294,7 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
   }
 
   async function marcarCarrinhoEmbalado(id, loteAlvo, quantidadeEmbalada) {
-    const alvo = loteAlvo || lote;
+    const alvo = loteAlvo || loteRef.current;
     const atualizado = {
       ...alvo,
       carrinhos: alvo.carrinhos.map((c) => {
@@ -1324,7 +1317,7 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
   }
 
   async function finalizarEmbalagemProduto(payload, loteAlvo) {
-    const alvo = loteAlvo || lote;
+    const alvo = loteAlvo || loteRef.current;
     const diferenca = payload.esperado - payload.embalado;
     const registro = {
       produtoId: payload.produtoId,
@@ -1354,7 +1347,7 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
 
   async function fecharLote(resumo) {
     const atualizado = {
-      ...lote,
+      ...loteRef.current,
       status: "fechado",
       fechamento: {
         usuario: currentUser.nome,
@@ -1363,8 +1356,8 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
       },
     };
     await persistLote(atualizado);
-    registrarLog("fechamento_lote", currentUser.nome, `Lote ${lote.numero} (${lote.data})`);
-    showToast(`Lote ${lote.numero} fechado com sucesso.`);
+    registrarLog("fechamento_lote", currentUser.nome, `Lote ${atualizado.numero} (${atualizado.data})`);
+    showToast(`Lote ${atualizado.numero} fechado com sucesso.`);
     return atualizado;
   }
 
@@ -1378,13 +1371,13 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
     if (lote.status !== "fechado") return false;
     const eventoReabertura = { usuario: currentUser.nome, horario: new Date().toISOString() };
     const atualizado = {
-      ...lote,
+      ...loteRef.current,
       status: "aberto",
-      reaberturas: [...(lote.reaberturas || []), eventoReabertura],
+      reaberturas: [...(loteRef.current.reaberturas || []), eventoReabertura],
     };
     await persistLote(atualizado);
-    registrarLog("lote_reaberto", currentUser.nome, `Lote ${lote.numero} (${lote.data})`);
-    showToast(`Lote ${lote.numero} reaberto para correções.`);
+    registrarLog("lote_reaberto", currentUser.nome, `Lote ${atualizado.numero} (${atualizado.data})`);
+    showToast(`Lote ${atualizado.numero} reaberto para correções.`);
     return true;
   }
 
@@ -1577,9 +1570,7 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
           produtos={produtos}
           users={users}
           logs={logs}
-          lote={lote}
-          historicoLotes={historicoLotes}
-          onCarregarHistorico={carregarHistoricoLotes}
+          onCarregarRegistrosDoPeriodo={carregarRegistrosDoPeriodo}
           onBack={() => setScreen("none")}
         />
       ) : screen === "produtos" ? (
@@ -4617,15 +4608,17 @@ function RelatoriosTab({ user, produtos, planos, onCarregarRegistrosDoPeriodo, s
   const [editando, setEditando] = useState(null); // item selecionado para edição
   const [todosLotes, setTodosLotes] = useState([]);
 
+  async function recarregar() {
+    const noventaDiasAtras = new Date();
+    noventaDiasAtras.setDate(noventaDiasAtras.getDate() - 90);
+    const inicioISO = noventaDiasAtras.toISOString().slice(0, 10);
+    const doSupabase = await onCarregarRegistrosDoPeriodo(inicioISO, localISO());
+    setTodosLotes(doSupabase);
+    setCarregando(false);
+  }
+
   useEffect(() => {
-    (async () => {
-      const noventaDiasAtras = new Date();
-      noventaDiasAtras.setDate(noventaDiasAtras.getDate() - 90);
-      const inicioISO = noventaDiasAtras.toISOString().slice(0, 10);
-      const doSupabase = await onCarregarRegistrosDoPeriodo(inicioISO, localISO());
-      setTodosLotes(doSupabase);
-      setCarregando(false);
-    })();
+    recarregar();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -4689,9 +4682,6 @@ function RelatoriosTab({ user, produtos, planos, onCarregarRegistrosDoPeriodo, s
       ok = await onEditarLancamento(
         {
           secao: editando.secao,
-          loteAno: editando.loteAno,
-          loteNumero: editando.loteNumero,
-          loteData: editando.loteData,
           registroId: editando.registro.id,
           registroUsuario: editando.registro.usuario,
           produtoNome: nomeProduto(editando.registro.produtoId),
@@ -4700,7 +4690,10 @@ function RelatoriosTab({ user, produtos, planos, onCarregarRegistrosDoPeriodo, s
         alteracoes
       );
     }
-    if (ok) setEditando(null);
+    if (ok) {
+      setEditando(null);
+      recarregar();
+    }
   }
 
   function qtdEsperadaAgg(produto) {
@@ -5587,16 +5580,21 @@ function ProdutoForm({ produto, onSalvar, onCancelar }) {
   );
 }
 
-function AuditoriaScreen({ produtos, users, logs, lote, historicoLotes, onCarregarHistorico, onBack }) {
+function AuditoriaScreen({ produtos, users, logs, onCarregarRegistrosDoPeriodo, onBack }) {
   const [aba, setAba] = useState("lancamentos"); // lancamentos | acessos
   const [carregando, setCarregando] = useState(true);
   const [filtroUsuario, setFiltroUsuario] = useState("todos");
   const [filtroTipo, setFiltroTipo] = useState("todos");
   const [periodo, setPeriodo] = useState("semana"); // hoje | semana | mes | tudo
+  const [todosLotes, setTodosLotes] = useState([]);
 
   useEffect(() => {
     (async () => {
-      await onCarregarHistorico();
+      const noventaDiasAtras = new Date();
+      noventaDiasAtras.setDate(noventaDiasAtras.getDate() - 90);
+      const inicioISO = noventaDiasAtras.toISOString().slice(0, 10);
+      const doSupabase = await onCarregarRegistrosDoPeriodo(inicioISO, localISO());
+      setTodosLotes(doSupabase);
       setCarregando(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -5608,7 +5606,6 @@ function AuditoriaScreen({ produtos, users, logs, lote, historicoLotes, onCarreg
   const semanaAtual = segundaFeiraDe(hojeISO);
   const mesAtual = hojeISO.slice(0, 7);
 
-  const todosLotes = [...historicoLotes.filter((l) => !(l.ano === lote.ano && l.numero === lote.numero)), lote];
   const lotesPeriodo = todosLotes.filter((l) => {
     if (periodo === "hoje") return l.data === hojeISO;
     if (periodo === "semana") return l.data >= semanaAtual && l.data <= hojeISO;
