@@ -239,33 +239,33 @@ export default function App() {
   const [requests, setRequests] = useState([]);
 const [produtos  , setProdutos] = useState([]);
 
-useEffect(() => {
-  async function carregarProdutos() {
-    const { data, error } = await supabase
-      .from('produtos')
-      .select('*')
-      .order('nome');
+async function carregarProdutos() {
+  const { data, error } = await supabase
+    .from('produtos')
+    .select('*')
+    .order('nome');
 
-    if (error) {
-      console.error('Erro ao carregar produtos:', error);
-      return;
-    }
-
-    const produtosFormatados = data.map(p => ({
-      id: p.id,
-      nome: p.nome,
-      pesoMassa: p.peso_massa,
-      pesoRecheio: p.peso_recheio,
-      pesoCatupiry: p.peso_catupiry,
-      temCatupiry: p.tem_catupiry,
-      empana: p.empana,
-      validadeDias: p.validade_dias,
-      status: p.status,
-    }));
-
-    setProdutos(produtosFormatados);
+  if (error) {
+    console.error('Erro ao carregar produtos:', error);
+    return;
   }
 
+  const produtosFormatados = data.map(p => ({
+    id: p.id,
+    nome: p.nome,
+    pesoMassa: p.peso_massa,
+    pesoRecheio: p.peso_recheio,
+    pesoCatupiry: p.peso_catupiry,
+    temCatupiry: p.tem_catupiry,
+    empana: p.empana,
+    validadeDias: p.validade_dias,
+    status: p.status,
+  }));
+
+  setProdutos(produtosFormatados);
+}
+
+useEffect(() => {
   carregarProdutos();
 }, []);
   const [planos, setPlanos] = useState([]);
@@ -674,17 +674,42 @@ useEffect(() => {
   }
 
   async function salvarProduto(dados, idExistente) {
-    let next;
+    const camposDb = {
+      nome: dados.nome,
+      peso_massa: dados.pesoMassa,
+      peso_recheio: dados.pesoRecheio,
+      peso_catupiry: dados.pesoCatupiry,
+      tem_catupiry: dados.temCatupiry,
+      empana: dados.empana,
+      validade_dias: dados.validadeDias,
+      status: dados.status,
+    };
+
     if (idExistente) {
-      next = produtos.map((p) => (p.id === idExistente ? { ...p, ...dados } : p));
+      const { error } = await supabase
+        .from('produtos')
+        .update(camposDb)
+        .eq('id', idExistente);
+      if (error) {
+        console.error('Erro ao editar produto:', error);
+        showToast("Não foi possível salvar. Tente novamente.", "warn");
+        return;
+      }
       registrarLog("produto_editado", currentUser.nome, dados.nome);
+      showToast("Produto atualizado com sucesso.");
     } else {
-      const id = gerarIdProduto(dados.nome);
-      next = [...produtos, { id, ...dados }];
+      const { error } = await supabase
+        .from('produtos')
+        .insert(camposDb);
+      if (error) {
+        console.error('Erro ao criar produto:', error);
+        showToast("Não foi possível cadastrar. Tente novamente.", "warn");
+        return;
+      }
       registrarLog("produto_criado", currentUser.nome, dados.nome);
+      showToast("Produto cadastrado com sucesso.");
     }
-    await persistProdutos(next);
-    showToast(idExistente ? "Produto atualizado com sucesso." : "Produto cadastrado com sucesso.");
+    await carregarProdutos();
   }
 
   async function carregarSobras() {
