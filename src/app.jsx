@@ -955,9 +955,12 @@ async function garantirLoteDoDia() {
       lote_id: loteId,
       produto_id: entrada.produtoId,
       etapa: 'modelagem',
-         responsavel_id: currentUser.id,
+      responsavel_id: currentUser.id,
       turno: turnoAtivo,
-      peso: entrada.peso,
+      massa_utilizada: entrada.massaUtilizada,
+      recheio_utilizado: entrada.recheioUtilizado,
+      catupiry_utilizado: entrada.catupiryUtilizado,
+      farinha_utilizada: entrada.farinhaUtilizada,
       perda: entrada.perda,
       observacoes: `${entrada.observacoes || ''} [usuário: ${currentUser.nome}]`.trim(),
     })
@@ -1111,6 +1114,10 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
       produtoId: r.produto_id,
       peso: r.peso,
       perda: r.perda,
+      massaUtilizada: r.massa_utilizada,
+      recheioUtilizado: r.recheio_utilizado,
+      catupiryUtilizado: r.catupiry_utilizado,
+      farinhaUtilizada: r.farinha_utilizada,
       quantidadeEmbalada: r.quantidade_embalada,
       unidadesPorPacote: r.unidades_por_pacote,
       pacotesGerados: r.pacotes_gerados,
@@ -1281,6 +1288,26 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
     }
 
     showToast("✅ Alteração salva com sucesso.");
+    return true;
+  }
+
+  async function excluirLancamento({ registroId, registroUsuario, produtoNome, etapaLabel }) {
+    const souAdmin = currentUser.perfil === "administrador";
+    if (!souAdmin && registroUsuario !== currentUser.nome) {
+      showToast("Você só pode excluir os seus próprios lançamentos.", "warn");
+      return false;
+    }
+    const { error } = await supabase
+      .from('registros_producao')
+      .delete()
+      .eq('id', registroId);
+    if (error) {
+      console.error('Erro ao excluir lançamento:', error);
+      showToast("Não foi possível excluir. Tente novamente.", "warn");
+      return false;
+    }
+    registrarLog("registro_excluido", currentUser.nome, `${etapaLabel || ""}${produtoNome ? " " + produtoNome : ""}`);
+    showToast("Lançamento excluído.");
     return true;
   }
 
@@ -1704,6 +1731,7 @@ async function carregarRegistrosDoPeriodo(dataInicio, dataFim) {
                 onCarregarRegistrosDoPeriodo={carregarRegistrosDoPeriodo}
                 sobras={sobras}
                 onEditarLancamento={editarLancamento}
+                onExcluirLancamento={excluirLancamento}
                 onEditarSobra={editarSobraRegistro}
               />
             )}
@@ -4484,9 +4512,11 @@ const PERFIL_LABEL = {
 // Modal genérico para corrigir um registro já lançado (recheio, massa,
 // modelagem, embalagem, sobra ou perda). Só é aberto a partir do
 // Histórico/Relatórios — nunca a partir das telas de lançamento.
-function EditarRegistroModal({ titulo, subtitulo, campos, valores, onSalvar, onFechar }) {
+function EditarRegistroModal({ titulo, subtitulo, campos, valores, onSalvar, onExcluir, onFechar }) {
   const [form, setForm] = useState(() => ({ ...valores }));
   const [salvando, setSalvando] = useState(false);
+  const [confirmandoExclusao, setConfirmandoExclusao] = useState(false);
+  const [excluindo, setExcluindo] = useState(false);
 
   function setCampo(key, val) {
     setForm((f) => ({ ...f, [key]: val }));
@@ -4577,6 +4607,48 @@ function EditarRegistroModal({ titulo, subtitulo, campos, valores, onSalvar, onF
             <Save size={14} /> {salvando ? "Salvando..." : "Salvar alterações"}
           </button>
         </div>
+
+        {onExcluir && (
+          !confirmandoExclusao ? (
+            <button
+              onClick={() => setConfirmandoExclusao(true)}
+              className="w-full rounded-xl py-2.5 text-sm font-semibold mt-2"
+              style={{ background: C.redSoft, color: C.redDark }}
+            >
+              🗑️ Excluir lançamento
+            </button>
+          ) : (
+            <div className="rounded-xl p-3 mt-2" style={{ background: C.redSoft }}>
+              <div className="text-xs font-semibold mb-2" style={{ color: C.redDark }}>
+                Tem certeza? Essa ação não pode ser desfeita.
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setConfirmandoExclusao(false)}
+                  className="flex-1 rounded-lg py-2 text-xs font-semibold"
+                  style={{ background: C.white, color: C.gray900 }}
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={async () => {
+                    setExcluindo(true);
+                    try {
+                      await onExcluir();
+                    } finally {
+                      setExcluindo(false);
+                    }
+                  }}
+                  disabled={excluindo}
+                  className="flex-1 rounded-lg py-2 text-xs font-semibold text-white"
+                  style={{ background: C.redDark, opacity: excluindo ? 0.6 : 1 }}
+                >
+                  {excluindo ? "Excluindo..." : "Sim, excluir"}
+                </button>
+              </div>
+            </div>
+          )
+        )}
       </div>
     </div>
   );
@@ -4624,7 +4696,7 @@ function camposEditaveisPara(item) {
 
 const TIPO_LABEL_LANCAMENTO = { recheio: "Recheio", massa: "Massa", modelagem: "Modelagem", embalagem: "Embalagem", perda: "Perda (sobra descartada)", sobra: "Sobra em estoque" };
 
-function RelatoriosTab({ user, produtos, planos, onCarregarRegistrosDoPeriodo, sobras = [], onEditarLancamento, onEditarSobra }) {
+function RelatoriosTab({ user, produtos, planos, onCarregarRegistrosDoPeriodo, sobras = [], onEditarLancamento, onExcluirLancamento, onEditarSobra }) {
   const [tipo, setTipo] = useState("diario"); // diario | semanal | mensal
   const [dataRef, setDataRef] = useState(localISO());
   const [carregando, setCarregando] = useState(true);
@@ -4715,6 +4787,20 @@ function RelatoriosTab({ user, produtos, planos, onCarregarRegistrosDoPeriodo, s
         alteracoes
       );
     }
+    if (ok) {
+      setEditando(null);
+      recarregar();
+    }
+  }
+
+  async function excluirEdicao() {
+    if (!editando || editando.tipo === "sobra") return;
+    const ok = await onExcluirLancamento({
+      registroId: editando.registro.id,
+      registroUsuario: editando.registro.usuario,
+      produtoNome: nomeProduto(editando.registro.produtoId),
+      etapaLabel: TIPO_LABEL_LANCAMENTO[editando.tipo],
+    });
     if (ok) {
       setEditando(null);
       recarregar();
@@ -5219,6 +5305,7 @@ function RelatoriosTab({ user, produtos, planos, onCarregarRegistrosDoPeriodo, s
           campos={camposEditaveisPara(editando)}
           valores={editando.registro}
           onSalvar={salvarEdicao}
+          onExcluir={editando.tipo !== "sobra" ? excluirEdicao : undefined}
           onFechar={() => setEditando(null)}
         />
       )}
